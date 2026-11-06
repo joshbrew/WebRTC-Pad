@@ -1,0 +1,80 @@
+import {launchTestBrowser} from './browser-fixture.mjs';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import {once} from 'node:events';
+import {pathToFileURL} from 'node:url';
+import {createApp} from '../src/server.js';
+const {chromium}=await import(pathToFileURL(process.env.PLAYWRIGHT_MODULE).href);
+const app=createApp({env:{},createInjector:async()=>({name:'Convenience fixture',setState(){},addController(){},removeController(){},close(){}})});
+let browser;
+const otherApps=[];
+try {
+  app.server.listen(0,'127.0.0.1');await once(app.server,'listening');
+  browser=await launchTestBrowser(chromium,{channel:'msedge',headless:true});
+  const context=await browser.newContext({viewport:{width:1280,height:950}});
+  await context.addInitScript(()=>{localStorage.setItem('webrtc-pad:block-local-controller-input:v2','false');
+    for(const role of ['host','client'])localStorage.setItem(`webrtc-pad:tour-v1:${role}`,'seen');
+    localStorage.setItem('webrtc-pad:capture-method','browser');window.__captures=0;
+    navigator.mediaDevices.getDisplayMedia=async()=>{window.__captures++;throw new Error('Controller-only must not capture');};
+  });
+  const errors=[],host=await context.newPage(),guest=await context.newPage();
+  for(const page of [host,guest])page.on('pageerror',e=>errors.push(e.message));
+  const origin=`http://127.0.0.1:${app.server.address().port}`;
+  await host.goto(origin);await guest.goto(origin+'/?mode=join');
+  await guest.locator('#joinStepReply').click();assert.match(await guest.locator('#toast').textContent(),/Open your host/);
+  await host.locator('#hostCreate').click();await host.waitForFunction(()=>!document.querySelector('#hostNextStep').hidden);
+  assert.equal(await host.locator('#hostNextAction').textContent(),'Create invite');
+  await host.locator('#hostNextAction').click();await host.waitForFunction(()=>document.querySelector('#hostNextAction').textContent==='Save invite file');
+  const inviteDownload=host.waitForEvent('download');await host.locator('#hostNextAction').click();await inviteDownload;
+  assert.equal(await host.locator('#hostNextAction').textContent(),'Open reply file');
+  async function drop(page,selector,files) {
+    await page.evaluate(({selector,files})=>{
+      const zone=document.querySelector(selector),transfer=new DataTransfer();
+      for(const file of files)transfer.items.add(new File([file.text],file.name,{type:'text/plain'}));
+      zone.dispatchEvent(new DragEvent('dragenter',{bubbles:true,cancelable:true,dataTransfer:transfer}));
+      if(!zone.classList.contains('is-dragging'))throw new Error('Drop target did not highlight');
+      zone.dispatchEvent(new DragEvent('drop',{bubbles:true,cancelable:true,dataTransfer:transfer}));
+      if(zone.classList.contains('is-dragging'))throw new Error('Drop highlight did not clear');
+    },{selector,files});
+  }
+  await drop(guest,'label[for="clientInvitationFile"]',[{name:'one.txt',text:'one'},{name:'two.txt',text:'two'}]);
+  assert.equal(await guest.locator('#clientInvitation').inputValue(),'');
+  assert.match(await guest.locator('#toast').textContent(),/one invite or reply/);
+  await drop(guest,'label[for="clientInvitationFile"]',[{name:'invite.txt',text:await host.locator('#hostInvitation').inputValue()}]);
+  await guest.waitForFunction(()=>!document.querySelector('#downloadReply').disabled);
+  assert.equal(await guest.locator('#joinStepReply').getAttribute('aria-current'),'step');
+  const replyDownload=guest.waitForEvent('download');await guest.locator('#joinStepReply').click();await replyDownload;
+  assert.equal(await guest.locator('#joinStepReply').evaluate(el=>el.classList.contains('is-complete')),true);
+  const chooser=host.waitForEvent('filechooser');await host.locator('#hostNextAction').click();await (await chooser).setFiles([]);
+  await drop(host,'label[for="hostReplyFile"]',[{name:'reply.txt',text:await guest.locator('#clientReply').inputValue()}]);
+  await guest.waitForFunction(()=>document.querySelector('#clientEnablePad').dataset.ready==='true');
+  assert.equal(await host.locator('#hostNextAction').textContent(),'Check controllers');
+  assert.equal(await guest.locator('#joinStepControls').getAttribute('aria-current'),'step');
+  assert.equal(await guest.locator('#clientStage').evaluate(el=>el.classList.contains('controller-only')),true);
+  assert.ok((await guest.locator('#clientStage').boundingBox()).height<=240);
+  await guest.locator('#clientControlsFocus').click();await guest.locator('#joinKeyboardController').click();
+  await guest.waitForFunction(()=>document.querySelector('#clientSlot').textContent.includes('P1'));
+  await host.locator('#hostNextAction').click();
+  assert.equal(await host.evaluate(()=>window.__captures),0);assert.equal(await guest.evaluate(()=>window.__captures),0);
+  const original=await host.locator('#hostReply').inputValue();
+  await drop(host,'label[for="hostReplyFile"]',[{name:'large.txt',text:'x'.repeat(131073)}]);
+  assert.equal(await host.locator('#hostReply').inputValue(),original);
+  await fs.mkdir('.local/screenshots',{recursive:true});
+  await host.evaluate(()=>scrollTo(0,0));await host.screenshot({path:'.local/screenshots/convenience-host.png',fullPage:true});
+  await guest.setViewportSize({width:390,height:844});await guest.evaluate(()=>scrollTo(0,0));
+  assert.equal(await guest.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
+  await guest.screenshot({path:'.local/screenshots/convenience-guest-mobile.png',fullPage:true});
+  console.log('PASS: next-step actions, clickable join progress, dropped pairing files, rejected multi/oversize drops, keyboard joining and compact controller-only layout');
+  for(const platform of ['linux','darwin']) {
+    const fixture=createApp({env:{},platform});otherApps.push(fixture);fixture.server.listen(0,'127.0.0.1');await once(fixture.server,'listening');
+    const page=await context.newPage();page.on('pageerror',e=>errors.push(e.message));await page.goto(`http://127.0.0.1:${fixture.server.address().port}`);
+    await page.waitForFunction(()=>document.querySelector('#hostPlatformNote').textContent.length>0);
+    assert.equal(await page.locator('body').getAttribute('data-window-mouse'),'false');
+    assert.match(await page.locator('#hostPlatformNote').textContent(),platform==='linux'?/X11/:/experimental/);
+    await page.locator('#modeClient').click();
+    assert.equal(await page.locator('#tourScenario option[value="input"]').count(),1,'Keyboard/mouse guides remain available for guests');
+    await page.close();
+  }
+  console.log('PASS: Linux/macOS hosting limits are shown; window-scope capability is reported without restricting guest workflows');
+  assert.deepEqual(errors,[]);
+} finally {await browser?.close();await Promise.all(otherApps.map(value=>value.close()));await app.close();}

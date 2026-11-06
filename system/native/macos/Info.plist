@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>org.webrtc-pad.desktop</string>
+<key>CFBundleName</key><string>WebRTC Pad Desktop</string>
+<key>CFBundleVersion</key><string>1</string>
+<key>LSMinimumSystemVersion</key><string>13.0</string>
+<key>NSScreenCaptureUsageDescription</key><string>Share the screen or window you select and its optional playback audio with your guests.</string>
+</dict></plist>

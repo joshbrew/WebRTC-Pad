@@ -1,0 +1,82 @@
+{
+  "generatedAt": "2026-10-18T00:45:27.779Z",
+  "iterations": 100000,
+  "repeats": 3,
+  "notes": [
+    "Canonical controller snapshots, identical state and lossless float64 axes.",
+    "CPU encode measurements include constant-time output-length accounting; UTF-8 size conversion is outside the timed loop.",
+    "Payload bytes exclude SCTP/DTLS/UDP/IP overhead; savings do not imply a measured Internet latency reduction."
+  ],
+  "results": [
+    {
+      "method": "json",
+      "meanBytes": 360.16796875,
+      "minBytes": 307,
+      "maxBytes": 364,
+      "runs": [
+        {
+          "encodeMs": 150.28480000000002,
+          "decodeMs": 168.78000000000003
+        },
+        {
+          "encodeMs": 148.3159,
+          "decodeMs": 168.12
+        },
+        {
+          "encodeMs": 143.87720000000002,
+          "decodeMs": 165.5951
+        }
+      ]
+    },
+    {
+      "method": "binary-v1",
+      "meanBytes": 76,
+      "minBytes": 76,
+      "maxBytes": 76,
+      "runs": [
+        {
+          "encodeMs": 61.74430000000007,
+          "decodeMs": 38.09760000000006
+        },
+        {
+          "encodeMs": 55.95420000000013,
+          "decodeMs": 37.68139999999994
+        },
+        {
+          "encodeMs": 57.84649999999988,
+          "decodeMs": 34.55930000000012
+        }
+      ]
+    }
+  ],
+  "checksum": 207304242,
+  "nativeVideoRegression": {
+    "generatedAt": "2026-10-18T00:45:52.699Z",
+    "captureMethod": "native",
+    "encoder": "h264_nvenc",
+    "scaling": "GPU scaling → hardware encoder",
+    "gpuScaling": true,
+    "throughUI": true,
+    "guestView": true,
+    "receiverHint": true,
+    "audio": true,
+    "requestedFPS": 60,
+    "resolution": "720",
+    "qsvDepth": "1",
+    "nvencPreset": "p1",
+    "samples": 275,
+    "medianMs": 26.699951171875,
+    "p95Ms": 46.300048828125,
+    "frameIntervalMedianMs": 17,
+    "frameIntervalP95Ms": 33.699951171875,
+    "measuredFPS": 51.65133416490013,
+    "sourceToReceiveMs": 14.899951171874818,
+    "receiveToDisplayMs": 11.5,
+    "frameProcessingMs": 0.5,
+    "rawFrameAvailableMs": null,
+    "playoutDelayNegotiated": true,
+    "fps": 53,
+    "bufferMs": 0.4321521126760563,
+    "decodeMs": 0.6628644067796611
+  }
+}

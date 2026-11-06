@@ -1,0 +1,5 @@
+export function controllerPlatform(platform){
+  if(platform==='linux')return {platform,name:'Linux virtual gamepads',help:'Native receiving needs Python 3 and access to /dev/uinput (or /dev/input/uinput). It works with X11 or Wayland; desktop-control permission is separate. Use App-only if device access is unavailable.',guide:'/linux-desktop',setup:'Start-Linux.sh'};
+  if(platform==='darwin')return {platform,name:'macOS virtual HID gamepads',help:'Native receiving needs the built Mac HID helper. macOS may require Apple-approved virtual HID signing or entitlement; Accessibility and Screen Recording do not grant that access. App-only needs no HID permission.',guide:'/mac-desktop',setup:'Start-Mac.command'};
+  return {platform,name:'Windows virtual controllers',help:'Native receiving uses the installed virtual-controller backend. XInput has four controller indices; Automatic or HID can support other layouts. App-only needs no controller driver.',guide:'/app-inputs',setup:'Start-Windows.cmd'};
+}

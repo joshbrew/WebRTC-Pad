@@ -1,0 +1,8 @@
+/* Page defaults from style.css */
+*{box-sizing:border-box}
+body{margin:0;background:var(--surface-page);color:var(--text-body);font-family:var(--font-sans);font-size:var(--fs-base);line-height:var(--lh-body);font-synthesis:none}
+button,input,select,textarea{font:inherit}
+a{color:inherit}
+a:hover{color:var(--mint)}
+[hidden]{display:none!important}
+@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important}}

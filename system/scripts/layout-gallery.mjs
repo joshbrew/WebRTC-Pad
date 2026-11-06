@@ -1,0 +1,15 @@
+import fs from 'node:fs/promises';
+const layouts=[['single','Single view'],['grid','Grid'],['columns','Side by side'],['stacked','Stacked'],['focus','Featured'],['streamer','Streamer']];
+const groups=[['2-screens','Two screen shares'],['2-screens-2-cameras','Two shares + two guest cameras'],['3-screens','Three screen shares'],['3-screens-2-cameras','Three shares + two guest cameras']];
+export async function layoutGallery(browser,directory){
+ const context=await browser.newContext({viewport:{width:1480,height:1000}}),page=await context.newPage();
+ const css='*{box-sizing:border-box}body{margin:0;background:#101617;color:#e7eee8;font:16px system-ui;padding:28px}h1{font-size:26px;margin:0 0 8px}p{color:#a7bbb0;margin:0 0 22px;font-size:14px}.gallery{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}.card{margin:0;background:#182220;border:1px solid #35433c;border-radius:12px;overflow:hidden}.card:last-child:nth-child(odd){grid-column:1 / -1;width:calc(50% - 9px);justify-self:center}.card h2{font-size:21px;margin:0;padding:12px 16px}.card img{display:block;width:100%;height:auto}a{color:#c9f398;text-decoration:none}.group{max-width:1480px;margin:0 auto 44px}.offline .card:last-child:nth-child(odd){grid-column:auto;width:auto}.offline .gallery{grid-template-columns:repeat(auto-fit,minmax(min(100%,430px),1fr))}nav{display:flex;flex-wrap:wrap;gap:9px;margin-bottom:24px}nav a{padding:9px 12px;background:#24332a;border-radius:8px}';
+ let index='<!doctype html><meta charset="utf-8"><title>WebRTC Pad · Layout gallery</title><style>'+css+'</style><body class="offline"><h1>WebRTC Pad · Every layout</h1><p>Actual local three-person WebRTC calls with generated game and camera sources. Click any screenshot to view it full size.</p><nav>';
+ for(const [id,label] of groups)index+=`<a href="#${id}">${label}</a>`;index+='</nav>';
+ try{for(const [id,label] of groups){
+  let contact=`<!doctype html><meta charset="utf-8"><style>${css}</style><h1>${label}</h1><p>Guest view · actual WebRTC · generated game/camera sources · all six layouts</p><div class="gallery">`;
+  index+=`<section class="group" id="${id}"><h1>${label}</h1>`;
+  for(const side of ['guest','host']){index+=`<h2>${side==='guest'?'Guest':'Host'} view</h2><div class="gallery">`;for(const [layout,title] of layouts){const name=`${side}-${id}-${layout}.png`,data=await fs.readFile(`${directory}/${name}`);index+=`<figure class="card"><h2>${title}</h2><a href="${name}"><img src="${name}" alt="${side} ${title}, ${label}" loading="lazy"></a></figure>`;if(side==='guest')contact+=`<figure class="card"><h2>${title}</h2><img src="data:image/png;base64,${data.toString('base64')}" alt="${title}"></figure>`;}index+='</div>';}
+  index+='</section>';contact+='</div>';await page.setContent(contact);await page.evaluate(()=>Promise.all([...document.images].map(image=>image.decode())));await page.screenshot({path:`${directory}/all-layouts-${id}.png`,fullPage:true});
+ }await fs.writeFile(`${directory}/index.html`,index+'</body>');}finally{await context.close();}
+}

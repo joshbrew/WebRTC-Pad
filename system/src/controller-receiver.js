@@ -1,0 +1,16 @@
+import {appInputPacket} from '../public/app-input-wire.js';
+import {neutralState} from '../public/input.js';
+// Each local receiver owns its virtual pads. It cannot type or move a mouse.
+export class ControllerReceiver{
+  constructor({createInjector,outputs,now=()=>performance.now(),staleMs=700}){Object.assign(this,{createInjector,outputs,now,staleMs});this.clients=new Map();this.timer=setInterval(()=>{for(const owner of this.clients.values())for(const [device,pad] of owner.pads)if(now()-pad.at>staleMs){try{owner.driver?.setState(pad.slot,neutralState());Promise.resolve(owner.driver?.removeController?.(pad.slot)).catch(()=>{});}catch{}owner.pads.delete(device);}},100);this.timer.unref?.();}
+  attach(ws){const owner={pads:new Map(),driver:null,generation:0};this.clients.set(ws,owner);let queue=Promise.resolve();ws.send(JSON.stringify({type:'capability',outputs:this.outputs}));
+    const stop=()=>{owner.generation++;try{owner.driver?.close();}catch{}owner.driver=null;owner.pending=false;owner.pads.clear();};
+    ws.on('message',raw=>{queue=queue.then(async()=>{let msg;try{msg=JSON.parse(raw);}catch{return;}if(msg.type==='stop'){stop();ws.send(JSON.stringify({type:'stopped'}));return;}
+      if(msg.type==='start'){stop();const output=this.outputs.find(v=>v.id===msg.endpoint);if(!output)throw Error('Unsupported local controller endpoint');if([...this.clients.values()].some(v=>v!==owner && (v.driver || v.pending)))throw Error('Another local page is receiving controllers');owner.pending=true;const generation=owner.generation,driver=await this.createInjector({playerCount:0,controllerType:output.id});if(owner.generation!==generation || ws.readyState!==1){driver.close();return;}owner.pending=false;owner.driver=driver;driver.on?.('failure',error=>{if(owner.driver===driver){stop();if(ws.readyState===1)ws.send(JSON.stringify({type:'error',error:error.message || 'Virtual controller backend stopped'}));}});owner.output=output;ws.send(JSON.stringify({type:'ready',endpoint:output.id}));return;}
+      if(!owner.driver)return;const packet=appInputPacket(msg.packet);if(!packet)return;if(packet.kind==='reset'){for(const [device,pad] of owner.pads)if(packet.device==='all' || packet.device===device){owner.driver.setState(pad.slot,neutralState());await owner.driver.removeController?.(pad.slot);owner.pads.delete(device);}return;}
+      if(packet.kind!=='controller')return;let pad=owner.pads.get(packet.device);if(pad && packet.seq<=pad.seq)return;if(!pad){if(owner.pads.size>=(owner.output.maxPlayers || 64))throw Error('The selected controller endpoint is full');let index=1;while([...owner.pads.values()].some(p=>p.slot==='p'+index))index++;pad={slot:'p'+index,seq:-1};await owner.driver.addController?.(pad.slot);owner.pads.set(packet.device,pad);}pad.at=this.now();pad.seq=packet.seq;owner.driver.setState(pad.slot,packet.state);
+    }).catch(error=>{stop();if(ws.readyState===1)ws.send(JSON.stringify({type:'error',error:error.message}));});});
+    ws.on('close',()=>{stop();this.clients.delete(ws);});ws.on('error',()=>ws.terminate());
+  }
+  close(){clearInterval(this.timer);for(const [ws,owner] of this.clients){try{owner.driver?.close();}catch{}ws.close();}this.clients.clear();}
+}

@@ -1,0 +1,39 @@
+/* Type — one sans family, tight negative tracking on headings, wide tracking on uppercase eyebrows. */
+:root{
+--font-sans:Inter,"Segoe UI",system-ui,sans-serif;
+--font-mono:"JetBrains Mono",ui-monospace,Consolas,monospace;
+--font-display:"Bricolage Grotesque",Inter,system-ui,sans-serif;
+
+--fw-regular:400;/* @kind font */--fw-medium:500;/* @kind font */--fw-book:550;/* @kind font */--fw-semibold:600;/* @kind font */--fw-bold:650;/* @kind font */--fw-heavy:750;/* @kind font */
+
+--fs-nano:10px;/* @kind font */    /* empty-stage eyebrow, mobile pills */
+--fs-micro:11px;/* @kind font */  /* eyebrow, captions, kbd, micro-note */
+--fs-xs:12px;/* @kind font */     /* .small, status pill, small-button */
+--fs-sm:13px;/* @kind font */     /* buttons, inputs, check rows, notices */
+--fs-md:13px;/* @kind font */     /* h4, large button, mode switch */
+--fs-base:14px;/* @kind font */   /* body */
+--fs-lg:16px;/* @kind font */     /* h3, card titles */
+--fs-xl:16px;/* @kind font */     /* next-step title, help glyph */
+--fs-2xl:16px;/* @kind font */    /* quick-start title */
+--fs-brand:17px;/* @kind font */  /* wordmark */
+--fs-3xl:26px;/* @kind font */    /* dialog title, host stage title */
+--fs-h2:26px;/* @kind font */     /* view heading */
+--fs-stage:30px;/* @kind font */  /* empty-stage headline */
+--fs-guide:clamp(28px,5vw,42px);/* @kind font */
+
+--lh-tight:1.2;/* @kind font */--lh-heading:1.3;/* @kind font */--lh-body:1.5;/* @kind font */--lh-small:1.6;/* @kind font */--lh-relaxed:1.7;/* @kind font */
+
+--ls-brand:-.6px;/* @kind font */--ls-h2:-.8px;/* @kind font */--ls-h3:-.2px;/* @kind font */--ls-stage:-.85px;/* @kind font */--ls-dialog:-.6px;/* @kind font */
+--ls-eyebrow:1.4px;/* @kind font */--ls-eyebrow-wide:2px;/* @kind font */
+
+/* Semantic roles */
+--type-body:var(--fw-regular) var(--fs-base)/var(--lh-body) var(--font-sans);
+--type-ui:var(--fw-semibold) var(--fs-sm)/var(--lh-body) var(--font-sans);
+--type-small:var(--fw-regular) var(--fs-xs)/var(--lh-small) var(--font-sans);
+--type-h2:var(--fw-bold) var(--fs-h2)/var(--lh-heading) var(--font-display);
+--type-h3:var(--fw-bold) var(--fs-lg)/var(--lh-body) var(--font-sans);
+--type-h4:var(--fw-bold) var(--fs-md)/var(--lh-body) var(--font-sans);
+--type-stage-title:var(--fw-bold) var(--fs-stage)/1.05 var(--font-display);
+--type-eyebrow:var(--fw-bold) var(--fs-micro)/var(--lh-body) var(--font-sans);
+--type-code:var(--fw-medium) var(--fs-xs)/1.45 var(--font-mono);
+}

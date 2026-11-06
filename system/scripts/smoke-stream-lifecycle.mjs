@@ -1,0 +1,147 @@
+import {launchTestBrowser} from './browser-fixture.mjs';
+import assert from 'node:assert/strict';
+import {EventEmitter,once} from 'node:events';
+import {pathToFileURL} from 'node:url';
+import {createApp} from '../src/server.js';
+const {chromium}=await import(process.env.PLAYWRIGHT_MODULE?pathToFileURL(process.env.PLAYWRIGHT_MODULE).href:'playwright');
+const writes=[],errors=[],overlayWrites=[];
+const desktop=Object.assign(new EventEmitter(),{display:{width:1280,height:720},simulatedSurface:true,setState(state){writes.push(state);},event(){},close(){}});
+const app=createApp({env:{},platform:'win32',createInjector:async()=>({name:'Lifecycle fixture',setState(){},close(){}}),createDesktop:async()=>desktop,createOverlay:async()=>Object.assign(new EventEmitter(),{send(value){overlayWrites.push(value);},close(){overlayWrites.push({type:'closed'});}})});
+let browser;
+try{
+  app.server.listen(0,'127.0.0.1');await once(app.server,'listening');
+  browser=await launchTestBrowser(chromium,{channel:'msedge',headless:true,args:['--disable-background-timer-throttling','--disable-renderer-backgrounding']});
+  const context=await browser.newContext({viewport:{width:1280,height:950}});
+  await context.addInitScript(()=>{localStorage.setItem('webrtc-pad:block-local-controller-input:v2','false');
+    for(const role of ['host','client'])localStorage.setItem(`webrtc-pad:tour-v1:${role}`,'seen');localStorage.setItem('webrtc-pad:capture-method','browser');
+    const Original=RTCPeerConnection;window.__pcs=[];window.RTCPeerConnection=class extends Original{constructor(...args){super(...args);window.__pcs.push(this);}};
+    navigator.mediaDevices.getDisplayMedia=async()=>{const canvas=document.createElement('canvas');canvas.width=1280;canvas.height=720;const context=canvas.getContext('2d');let frame=0;const draw=()=>{context.fillStyle=`hsl(${frame++%360},60%,40%)`;context.fillRect(0,0,1280,720);setTimeout(draw,8);};draw();return canvas.captureStream(60);};
+  });
+  const origin=`http://127.0.0.1:${app.server.address().port}`;
+  const host=await context.newPage(),guest=await context.newPage();
+  for(const page of [host,guest]){page.on('pageerror',e=>errors.push(e.message));page.on('dialog',dialog=>dialog.accept());}
+  await host.goto(origin);await guest.goto(`${origin}/?mode=join`);
+  await host.locator('#hostPlayerOptions').evaluate(el=>el.open=true);await host.locator('#hostDynamicControllers').uncheck();await host.locator('#hostCreate').click();await host.waitForFunction(()=>!document.querySelector('#createInvitation').disabled);
+  await host.locator('#createInvitation').click();await host.waitForFunction(()=>!!document.querySelector('#hostInvitation').value);
+  await guest.locator('#clientInvitationFile').setInputFiles({name:'invite.txt',mimeType:'text/plain',buffer:Buffer.from(await host.locator('#hostInvitation').inputValue())});
+  await guest.waitForFunction(()=>!!document.querySelector('#clientReply').value);
+  await host.locator('#hostReplyFile').setInputFiles({name:'reply.txt',mimeType:'text/plain',buffer:Buffer.from(await guest.locator('#clientReply').inputValue())});
+  await guest.waitForFunction(()=>!document.querySelector('#clientEnablePad').disabled);await host.locator('#hostCapture').click();
+  await guest.waitForFunction(()=>document.querySelector('#clientVideo').getVideoPlaybackQuality().totalVideoFrames>8);
+  await guest.locator('#clientVideo').click();
+  const playback=await guest.locator('#clientVideo').evaluate(video=>({paused:video.paused,frames:video.getVideoPlaybackQuality().totalVideoFrames}));
+  console.log('Playback after clicking to focus:',playback);
+  assert.equal(playback.paused,false,'Clicking the live video to focus controller input must not pause it');
+  await guest.waitForFunction(frames=>document.querySelector('#clientVideo').getVideoPlaybackQuality().totalVideoFrames>frames+12,playback.frames);
+  await host.bringToFront();await host.locator('.call-preview-options').evaluate(el=>el.open=true);
+  await host.locator('#hostPreviewAutoPause').uncheck();
+  await host.waitForFunction(()=>!!document.querySelector('#hostPreview').srcObject);
+  await host.locator('#hostPreviewToggle').uncheck();
+  await host.waitForFunction(()=>document.querySelector('#hostPreview').paused && !document.querySelector('#hostPreview').srcObject);
+  const previewOffFrames=await guest.locator('#clientVideo').evaluate(v=>v.getVideoPlaybackQuality().totalVideoFrames);
+  await guest.waitForFunction(n=>document.querySelector('#clientVideo').getVideoPlaybackQuality().totalVideoFrames>n+12,previewOffFrames);
+  await host.locator('#hostPreviewToggle').check(); await host.waitForFunction(()=>!!document.querySelector('#hostPreview').srcObject);
+  await host.locator('#modeClient').click();await host.waitForFunction(()=>!document.querySelector('#hostPreview').srcObject);
+  const switchedFrames=await guest.locator('#clientVideo').evaluate(v=>v.getVideoPlaybackQuality().totalVideoFrames);
+  await guest.waitForFunction(n=>document.querySelector('#clientVideo').getVideoPlaybackQuality().totalVideoFrames>n+12,switchedFrames);
+  await host.locator('#modeHost').click();await host.waitForFunction(()=>!!document.querySelector('#hostPreview').srcObject);
+  await host.locator('#hostPreviewAutoPause').check();
+  // Headless pages share virtual focus. Dispatch the real handlers with explicit focus state.
+  await host.evaluate(()=>{window.__hasFocus=document.hasFocus.bind(document);document.hasFocus=()=>false;window.dispatchEvent(new Event('blur'));});
+  await host.waitForFunction(()=>!document.querySelector('#hostPreview').srcObject);
+  await host.evaluate(()=>{document.hasFocus=window.__hasFocus;window.dispatchEvent(new Event('focus'));});
+  await host.waitForFunction(()=>!!document.querySelector('#hostPreview').srcObject);
+  console.log('PASS: host preview toggle and focus pause detach/resume playback while guest frames continue');
+  await host.locator('#hostCallSettings').click();await host.locator('#hostSettingsSheet-players-tab').click();await host.locator('#hostGuestSettings').evaluate(el=>el.querySelectorAll('details').forEach(detail=>detail.open=true));await host.locator('#hostDesktopScope').selectOption('desktop');await host.locator('#hostDesktopMouse').check();
+  await guest.waitForFunction(()=>!document.querySelector('#clientDesktopMouse').disabled);await guest.locator('#clientCallControllers').click();await guest.locator('#clientDesktopMouse').evaluate(el=>{for(let parent=el.parentElement;parent;parent=parent.parentElement)if(parent.tagName==='DETAILS')parent.open=true;});await guest.locator('#clientDesktopMouse').check();await guest.locator('#controllersSheet .call-sheet-heading button').click();
+  await guest.locator('#clientStage').click();await guest.waitForFunction(()=>!document.querySelector('#clientVideo').paused);
+  const end=Date.now()+4000;while(!writes.some(state=>state.buttons.includes(0))&&Date.now()<end)await new Promise(r=>setTimeout(r,20));assert.ok(writes.some(state=>state.buttons.includes(0)));
+  const count=await guest.locator('#clientVideo').evaluate(video=>video.getVideoPlaybackQuality().totalVideoFrames);await guest.waitForFunction(frames=>document.querySelector('#clientVideo').getVideoPlaybackQuality().totalVideoFrames>frames+12,count);
+  await guest.keyboard.press('Escape');await guest.bringToFront();await guest.bringToFront();await guest.locator('#clientFullscreen').click();
+  try{await guest.waitForFunction(()=>document.fullscreenElement?.id==='clientStage' && document.querySelector('#clientToolbar').parentElement.id==='clientStage');}
+  catch(error){console.log('Fullscreen state:',await guest.evaluate(()=>({fullscreen:document.fullscreenElement?.id,parent:document.querySelector('#clientToolbar').parentElement.className,stageChildren:[...document.querySelector('#clientStage').children].map(el=>el.id)})),errors);throw error;}
+  assert.equal(await guest.locator('#clientToolbar').evaluate(el=>el.parentElement.id),'clientStage');
+  await guest.mouse.move(30,30);await guest.locator('#clientStage').focus();await guest.waitForTimeout(2700);
+  assert.equal(await guest.locator('#clientToolbar').evaluate(el=>getComputedStyle(el).opacity),'0','Idle fullscreen controls fade without polling');
+  await guest.mouse.move(45,45);await guest.waitForFunction(()=>getComputedStyle(document.querySelector('#clientToolbar')).opacity==='1');
+  await guest.screenshot({path:'.local/screenshots/fullscreen-controls.png'});
+  const toolbarCounts=await guest.evaluate(()=>{
+    const toolbar=document.querySelector('#clientToolbar'),box=toolbar.getBoundingClientRect(),original=RTCDataChannel.prototype.send;let sent=0;
+    RTCDataChannel.prototype.send=function(data){if(this.label==='desktop' || this.label==='desktop-events')sent++;return original.call(this,data);};
+    try{
+      toolbar.dispatchEvent(new PointerEvent('pointermove',{bubbles:true,clientX:box.x+5,clientY:box.y+5}));
+      toolbar.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,button:0,clientX:box.x+5,clientY:box.y+5}));
+      toolbar.dispatchEvent(new WheelEvent('wheel',{bubbles:true,cancelable:true,deltaY:100,clientX:box.x+5,clientY:box.y+5}));
+    }finally{RTCDataChannel.prototype.send=original;}
+    return sent;
+  });
+  assert.equal(toolbarCounts,0,'Fullscreen controls must not forward mouse movement, clicks or wheel events');
+  const controlPeer=await guest.evaluate(()=>window.__pcs[0].localDescription.sdp);
+  const oldVideo=await guest.evaluate(()=>window.__pcs.at(-1).localDescription.sdp);
+  await guest.locator('#clientCallSettings').click();await guest.locator('#clientSettingsSheet-screen-tab').click();await guest.locator('#clientRefreshVideo').click();assert.equal(await guest.locator('#clientRefreshVideo').isDisabled(),true);
+  await guest.waitForFunction(old=>window.__pcs.at(-1).localDescription?.sdp && window.__pcs.at(-1).localDescription.sdp!==old,oldVideo);
+  await guest.waitForFunction(()=>document.querySelector('#clientVideo').getVideoPlaybackQuality().totalVideoFrames>12);
+  assert.equal(await guest.evaluate(()=>window.__pcs[0].localDescription.sdp),controlPeer,'Refreshing picture preserves the controller connection');
+  const afterRefresh=await guest.locator('#clientVideo').evaluate(v=>v.getVideoPlaybackQuality().totalVideoFrames);
+  await guest.locator('#clientReleaseInputs').evaluate(el=>el.click());
+  assert.equal(await guest.locator('#clientDesktopMouse').isChecked(),false);assert.equal(await guest.locator('#clientDesktopTyping').isChecked(),false);
+  assert.equal(await guest.locator('#clientEnablePad').getAttribute('aria-pressed'),'false');
+  await guest.waitForFunction(n=>document.querySelector('#clientVideo').getVideoPlaybackQuality().totalVideoFrames>n+12,afterRefresh);
+  await guest.bringToFront();await guest.locator('#clientFullscreen').click();await guest.waitForFunction(()=>!document.fullscreenElement && document.querySelector('#clientToolbar').parentElement.classList.contains('call-main'));
+  assert.equal(await guest.locator('#clientToolbar').evaluate(el=>el.parentElement.classList.contains('call-main')),true);
+  await guest.locator('#clientDesktopMouse').evaluate(el=>{el.checked=true;el.dispatchEvent(new Event('change',{bubbles:true}));});
+  await guest.locator('#controllerAdvanced').evaluate(el=>el.open=true);await guest.locator('#clientEnablePad').evaluate(el=>el.click());
+  console.log('PASS: fullscreen controls fade/reveal and stay local; picture-only refresh preserves control peer; pause all input leaves video running; toolbar returns on exit');
+  await host.locator('#hostShowGuestCursors').check();
+  
+  await guest.bringToFront();await guest.locator('#clientStage').scrollIntoViewIfNeeded();
+  const cursorBox=await guest.locator('#clientStage').boundingBox(); await guest.mouse.move(cursorBox.x+cursorBox.width*.7,cursorBox.y+cursorBox.height*.6);
+  const cursorDeadline=Date.now()+5000;while(!overlayWrites.some(v=>v.type==='cursor') && Date.now()<cursorDeadline) await new Promise(r=>setTimeout(r,25));
+  if(!overlayWrites.some(v=>v.type==='cursor' && v.visible && v.labels===false))console.log('Cursor state:',await guest.evaluate(()=>({stage:document.querySelector('#clientStage').getBoundingClientRect().toJSON(),width:innerWidth,height:innerHeight,video:document.querySelector('#clientVideo').getBoundingClientRect().toJSON(),cursors:document.querySelectorAll('#clientStage .guest-cursor').length,mouse:document.querySelector('#clientDesktopMouse').checked})),{overlay:await host.locator('#hostShowGuestCursors').isChecked(),writes:overlayWrites.slice(-4)});
+  assert.ok(overlayWrites.some(v=>v.type==='cursor' && v.visible && v.labels===false));
+  await host.locator('#hostCursorLabels').check();
+  const labelsDeadline=Date.now()+5000;while(!overlayWrites.some(v=>v.type==='labels' && v.enabled) && Date.now()<labelsDeadline) await new Promise(r=>setTimeout(r,25));
+  assert.ok(overlayWrites.some(v=>v.type==='labels' && v.enabled));
+  console.log('PASS: real guest cursor data channel reaches the desktop overlay bridge; labels follow host toggle');
+  await host.locator('#hostPreviewAutoPause').uncheck();
+  await host.waitForFunction(()=>!!document.querySelector('#hostPreview').srcObject);
+  const cursorPosition=()=>{const stage=document.querySelector('#hostWatchStage'),cursor=stage.querySelector('.guest-cursor'),layer=stage.querySelector('.guest-cursors'),a=stage.getBoundingClientRect(),b=cursor.getBoundingClientRect();return {x:b.left-a.left,y:b.top-a.top,clip:getComputedStyle(layer).overflow,contain:getComputedStyle(layer).contain};};
+  await host.waitForFunction(()=>document.querySelector('#hostTileGrid [data-source-id="host-main"] video')?.videoWidth>0);await host.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+  await guest.bringToFront();const freshBox=await guest.locator('#clientStage').boundingBox();await guest.mouse.move(freshBox.x+freshBox.width*.66,freshBox.y+freshBox.height*.55);
+  await host.waitForFunction(()=>document.querySelector('#hostWatchStage .guest-cursor')?.getBoundingClientRect().width>0).catch(async error=>{console.log('POINTER DEBUG',await host.evaluate(()=>{const cursor=document.querySelector('.guest-cursor'),layer=cursor?.parentElement,v=document.querySelector('#hostTileGrid [data-source-id="host-main"] video');return {cursor:cursor?{hidden:cursor.hidden,rect:cursor.getBoundingClientRect().toJSON(),parent:layer?.parentElement.id,layerDisplay:getComputedStyle(layer).display}:null,video:v?{width:v.videoWidth,height:v.videoHeight,rect:v.getBoundingClientRect().toJSON()}:null,view:document.body.dataset.hostCallView};}),await guest.evaluate(()=>({mouse:document.querySelector('#clientDesktopMouse').checked,pointer:document.querySelector('#clientPanel').dataset.guestPointers,stage:document.querySelector('#clientStage').getBoundingClientRect().toJSON()})),overlayWrites.slice(-3));throw error;});
+  const beforeScroll=await host.evaluate(cursorPosition);
+  await host.evaluate(()=>scrollTo(0,document.querySelector('#hostWatchStage').getBoundingClientRect().bottom+100));
+  const afterScroll=await host.evaluate(cursorPosition);
+  if(Math.abs(afterScroll.x-beforeScroll.x)>=1 || Math.abs(afterScroll.y-beforeScroll.y)>=1)console.log('Cursor bounds',{beforeScroll,afterScroll});
+  assert.ok(Math.abs(afterScroll.x-beforeScroll.x)<1 && Math.abs(afterScroll.y-beforeScroll.y)<1);
+  assert.equal(afterScroll.clip,'hidden'); assert.match(afterScroll.contain,/paint/);
+  await host.evaluate(()=>scrollTo(0,0));
+  console.log('PASS: scrolling the host page keeps cursor coordinates and paint clipped to the video stage');
+  await guest.locator('#clientMediaToggle').evaluate(el=>el.click());await guest.waitForFunction(()=>document.querySelector('#clientStage').classList.contains('mouse-pad'));
+  async function layout(){
+    const geometry=await guest.evaluate(()=>{const stage=document.querySelector('#clientStage').getBoundingClientRect(),main=document.querySelector('#clientPanel .call-main').getBoundingClientRect();return {stageRight:stage.right,mainRight:main.right,overflow:document.documentElement.scrollWidth>innerWidth};});
+    assert.ok(geometry.stageRight<=geometry.mainRight+1,JSON.stringify(geometry));assert.equal(geometry.overflow,false);
+  }
+  for(const width of [390,960,1280,1560]){await guest.setViewportSize({width,height:950});await layout();}
+  await guest.setViewportSize({width:1280,height:950});
+  await guest.evaluate(()=>{const pc=window.__pcs[0];Object.defineProperty(pc,'connectionState',{configurable:true,value:'failed'});pc.dispatchEvent(new Event('connectionstatechange'));});
+  await guest.waitForFunction(()=>!document.querySelector('#clientStage').classList.contains('mouse-pad'));
+  assert.equal(await guest.locator('#clientDesktopMouse').isChecked(),false);assert.equal(await guest.locator('#clientEnablePad').getAttribute('aria-pressed'),'false');
+  await layout();
+  const chooser=guest.waitForEvent('filechooser');await guest.locator('#joinFocus').click();const picker=await chooser;
+  if(!await host.locator('#hostInviteSheet').evaluate(el=>el.open))await host.locator('#inviteFocus').click();const old=await host.locator('#hostInvitation').inputValue();await host.locator(old?'#newInvitation':'#createInvitation').click();await host.waitForFunction(old=>document.querySelector('#hostInvitation').value!==old,old);
+  const oldReply=await guest.locator('#clientReply').inputValue();
+  await picker.setFiles({name:'new-invite.txt',mimeType:'text/plain',buffer:Buffer.from(await host.locator('#hostInvitation').inputValue())});
+  await guest.waitForFunction(old=>document.querySelector('#clientReply').value&&document.querySelector('#clientReply').value!==old,oldReply);
+  await host.locator('#hostReplyFile').setInputFiles({name:'new-reply.txt',mimeType:'text/plain',buffer:Buffer.from(await guest.locator('#clientReply').inputValue())});
+  await guest.waitForFunction(()=>document.querySelector('#clientConnectionText').textContent==='Connected'&&!document.querySelector('#clientDesktopMouse').disabled);
+  assert.equal(await guest.locator('#clientEnablePad').getAttribute('aria-pressed'),'true','Selected controller sharing resumes on reconnect');
+  await guest.locator('#clientDesktopMouse').evaluate(el=>{el.checked=true;el.dispatchEvent(new Event('change',{bubbles:true}));});await guest.waitForFunction(()=>document.querySelector('#clientStage').classList.contains('mouse-pad'));
+  await guest.bringToFront();await guest.locator('#clientFullscreen').click();await guest.waitForFunction(()=>document.fullscreenElement?.id==='clientStage');
+  await host.locator('#hostEnd').click();await guest.waitForFunction(()=>!document.querySelector('#clientStage').classList.contains('mouse-pad') && !document.fullscreenElement);
+  assert.equal(await guest.locator('#clientToolbar').evaluate(el=>el.parentElement.classList.contains('call-main')),true);
+  assert.equal(await guest.locator('#clientEnablePad').isDisabled(),true);await layout();
+  const finalChooser=guest.waitForEvent('filechooser');await guest.locator('#joinFocus').click();await finalChooser;
+  assert.deepEqual(errors,[]);
+  console.log('PASS: clicking/remote mouse keeps presented video frames advancing; mouse-pad fits four viewport sizes; failed connection and host-end clear controls/pad; Open an invite imports a fresh invite and reconnects');
+}finally{await browser?.close();await app.close();}

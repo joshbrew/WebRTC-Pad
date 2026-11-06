@@ -1,0 +1,461 @@
+/* WebRTC Pad — design-system layer. Loaded last on every page.
+   Visual polish and motion only: sizes, layout and IDs stay as the app defines them. */
+
+/* ── Base ───────────────────────────────────────────── */
+html { background:var(--surface-page); }
+body { background:var(--surface-page); color:var(--ink); -webkit-font-smoothing:antialiased; transition:background-color var(--dur-menu) var(--ease-out),color var(--dur-menu) var(--ease-out); }
+:where(button,a,summary,input,select,textarea):focus-visible { outline:2px solid var(--focus); outline-offset:2px; }
+::selection { background:var(--accent); color:var(--on-accent); }
+.view-heading h2, .call-shell .view-heading h2, dialog h3#tourTitle, .stage-title { font-family:var(--font-display); letter-spacing:-.6px; }
+.view-heading h2 { font-weight:700; }
+.eyebrow, .empty-eyebrow { letter-spacing:1.4px; }
+.video-quality, .stats, #hostPreviewStats, code, kbd, .kbd { font-family:var(--font-mono); }
+
+/* ── Brand ──────────────────────────────────────────── */
+.brand-mark { transition:transform var(--dur-menu) var(--ease-spring); }
+.brand:hover .brand-mark { transform:rotate(-8deg) scale(1.06); }
+
+/* ── Buttons: keycaps that sink when pressed ───────── */
+/* :where() keeps these at zero specificity so the app's own button variants still win. */
+:where(.button) { --edge:var(--shadow-key); box-shadow:var(--edge); transform:translateY(0);
+  transition:transform var(--dur-press) var(--ease-out),box-shadow var(--dur-press) var(--ease-out),background-color var(--dur-quick) var(--ease-out),border-color var(--dur-quick),color var(--dur-quick); }
+:where(.button):active:not(:disabled) { transform:translateY(2px); box-shadow:none; }
+:where(.button):disabled { box-shadow:none; }
+:where(.button.small-button,.small-button) { --edge:none; }
+:where(.button.primary) { --edge:var(--shadow-key-accent); }
+.button.primary .icon:last-child { transition:transform var(--dur-menu) var(--ease-spring); }
+.button.primary:hover:not(:disabled) .icon:last-child { transform:translateX(3px); }
+.button.control.active, .control.active { background:var(--accent-soft); border-color:transparent; color:var(--accent-soft-ink); }
+.button.danger { --edge:0 2px 0 #7d1f24; background:var(--danger); border-color:transparent; color:var(--on-danger); }
+.button.danger:hover:not(:disabled) { background:var(--danger); filter:brightness(1.08); }
+.help-button { border-color:var(--line-strong); color:var(--ink-2); background:transparent; transition:background-color var(--dur-quick),color var(--dur-quick),transform var(--dur-menu) var(--ease-spring); }
+.help-button:hover { background:var(--surface-raised); color:var(--ink); transform:scale(1.06); }
+.help-button:active { transform:scale(.94); }
+
+/* ── Host / Join: one sliding mint thumb ───────────── */
+.app-header .mode-switch { position:relative; overflow:clip; display:grid; grid-template-columns:1fr 1fr; gap:0; padding:4px; border:0; border-radius:999px; background:var(--surface-raised); isolation:isolate; }
+.app-header .mode-switch::before { content:""; position:absolute; z-index:-1; top:4px; bottom:4px; left:4px; width:calc(50% - 4px); border-radius:999px; background:var(--accent); box-shadow:var(--shadow-key-accent); transition:transform var(--dur-stage) var(--ease-spring); }
+.app-header .mode-switch:has(#modeClient[aria-selected=true])::before { transform:translateX(100%); }
+.app-header .mode-switch button { position:relative; background:transparent!important; box-shadow:none!important; border-radius:999px; color:var(--ink-2); transition:color var(--dur-quick); }
+.app-header .mode-switch button:hover { color:var(--ink); }
+.app-header .mode-switch button[aria-selected=true] { color:var(--on-accent); }
+
+.app-header .mode-switch button:focus-visible { outline:2px solid var(--focus); outline-offset:-2px; }
+.app-header .mode-switch button[aria-selected=true]:focus-visible { outline-color:var(--on-accent); outline-offset:-4px; }
+/* Keep Host/Join dead-centre: the header is three columns, so the switch no longer shifts when the right side changes. */
+@media (min-width:861px) {
+  .app-header { display:grid; grid-template-columns:minmax(0,1fr) auto minmax(0,1fr); }
+  .app-header > .brand { justify-self:start; }
+  .app-header > .header-right { justify-self:end; }
+  .app-header .mode-switch { width:max-content; }
+}
+
+/* ── Status pill and live dot ───────────────────────── */
+.status-pill { border-color:var(--line); color:var(--ink-2); }
+.status-pill.is-live { color:var(--accent-soft-ink); background:var(--accent-soft); border-color:transparent; }
+.status-pill.is-live .dot, .toolbar-info .dot { animation:pad-live 1.8s var(--ease-out) infinite; }
+
+/* ── Call bar: a floating pill of keycaps ───────────── */
+.call-shell .call-toolbar { background:var(--surface-card); border-color:var(--line); border-radius:var(--radius-xl); box-shadow:var(--shadow-pop); }
+.call-shell .call-toolbar .button { --edge:var(--shadow-key); background:var(--surface-raised); border-color:transparent; border-radius:999px; box-shadow:var(--edge); }
+.call-shell .call-toolbar .button:hover:not(:disabled) { background:var(--surface-hover); border-color:transparent; }
+.call-shell .call-toolbar .button:active:not(:disabled) { transform:translateY(2px); box-shadow:none; }
+.call-shell .call-toolbar .button.active, .call-shell .call-toolbar .button[aria-pressed=true] { background:var(--accent-soft); color:var(--accent-soft-ink); }
+.call-shell .call-toolbar .button.danger { --edge:0 2px 0 #7d1f24; background:var(--danger); color:var(--on-danger); }
+.call-shell .call-toolbar .button.danger:hover:not(:disabled) { background:var(--danger); filter:brightness(1.08); }
+.call-shell .call-toolbar :is([id$=CallMic],[id$=CallCamera]) { border-radius:999px 0 0 999px; }
+.call-shell .call-toolbar :is(.mic-settings-button,.camera-settings-button) { border-radius:0 999px 999px 0; border-left:1px solid var(--line)!important; }
+.call-shell .call-toolbar .button .icon { transition:transform var(--dur-menu) var(--ease-spring); }
+.call-shell .call-toolbar .button:hover:not(:disabled) .icon { transform:scale(1.1); }
+.call-toolbar .has-unread::after { animation:pad-pop var(--dur-stage) var(--ease-spring) both; }
+
+/* Phones: the mic/camera device arrows stay tucked away. */
+@media (max-width:700px) { .call-shell .call-toolbar :is(.mic-settings-button,.camera-settings-button) { display:none; } .call-shell .call-toolbar :is([id$=CallMic],[id$=CallCamera]) { border-radius:999px; } }
+
+/* ── Panels and sheets spring in from the call bar ──── */
+.call-sheet[open] { background:var(--surface-card); border-color:var(--line)!important; border-radius:var(--radius-lg); box-shadow:var(--shadow-dialog); transform-origin:100% 100%; animation:pad-sheet var(--dur-stage) var(--ease-spring) both; }
+.call-sheet[open] .call-sheet-content > * { animation:pad-rise var(--dur-menu) var(--ease-out) both; }
+.call-sheet[open] .call-sheet-content > :nth-child(2) { animation-delay:calc(var(--dur-stagger)*1); }
+.call-sheet[open] .call-sheet-content > :nth-child(3) { animation-delay:calc(var(--dur-stagger)*2); }
+.call-sheet[open] .call-sheet-content > :nth-child(4) { animation-delay:calc(var(--dur-stagger)*3); }
+.call-sheet[open] .call-sheet-content > :nth-child(n+5) { animation-delay:calc(var(--dur-stagger)*4); }
+.call-sheet-heading h3 { font-family:var(--font-display); letter-spacing:-.3px; }
+
+/* Settings tabs: the chosen section lifts into mint */
+.settings-tabs { background:var(--surface-card); border-color:var(--line); }
+.settings-tabs [role=tab] { border-radius:999px; color:var(--ink-2); transition:background-color var(--dur-quick),color var(--dur-quick),transform var(--dur-menu) var(--ease-spring); }
+.settings-tabs [role=tab]:hover { background:var(--surface-raised); color:var(--ink); }
+.settings-tabs [aria-selected=true], .settings-tabs [role=tab][aria-selected=true]:hover { background:var(--accent); border-color:transparent; color:var(--on-accent); box-shadow:var(--shadow-key-accent); }
+.settings-tabs [role=tab]:active { transform:scale(.96); }
+.settings-pane:not([hidden]) { animation:pad-rise var(--dur-menu) var(--ease-out) both; }
+
+/* Cards */
+.sidebar-card, .people-card, .quick-start, .settings-card { border-color:var(--line); }
+.quick-start { background:var(--surface-card); }
+
+/* ── Disclosure: chevrons turn, content rises ───────── */
+details > summary { transition:color var(--dur-quick); }
+/* Disclosure motion belongs to the handle, not arbitrary live content. */
+details > summary::before { transition:transform var(--dur-menu) var(--ease-spring),border-color var(--dur-quick); }
+details > summary .icon:last-child { transition:transform var(--dur-menu) var(--ease-spring); }
+details[open] > summary .icon:last-child { transform:rotate(180deg); }
+
+/* Guest row menu: actions cascade in */
+.call-shell .peer-menu[open] .peer-menu-actions > * { animation:pad-rise var(--dur-menu) var(--ease-out) both; }
+.call-shell .peer-menu[open] .peer-menu-actions > :nth-child(2) { animation-delay:calc(var(--dur-stagger)*1); }
+.call-shell .peer-menu[open] .peer-menu-actions > :nth-child(3) { animation-delay:calc(var(--dur-stagger)*2); }
+.call-shell .peer-menu[open] .peer-menu-actions > :nth-child(n+4) { animation-delay:calc(var(--dur-stagger)*3); }
+.participant-row { border-radius:14px; transition:background-color var(--dur-quick); }
+.participant-row:hover { background:var(--surface-raised); }
+
+/* ── Toggles: checkboxes in a check row become switches ── */
+.check-row { color:var(--ink-2); }
+:is(.check-row,#clientJoinControllersOption) input[type=checkbox] { appearance:none; -webkit-appearance:none; position:relative; flex:none; width:38px; height:22px; margin:0; border-radius:999px; background:var(--surface-raised); box-shadow:inset 0 0 0 1.5px var(--line-strong); cursor:pointer; transition:background-color var(--dur-quick),box-shadow var(--dur-quick); }
+:is(.check-row,#clientJoinControllersOption) input[type=checkbox]::before { content:""; position:absolute; top:3px; left:3px; width:16px; height:16px; border-radius:999px; background:var(--ink-2); transition:transform var(--dur-menu) var(--ease-spring),width var(--dur-press) var(--ease-out),background-color var(--dur-quick); }
+:is(.check-row,#clientJoinControllersOption) input[type=checkbox]:active::before { width:21px; }
+:is(.check-row,#clientJoinControllersOption) input[type=checkbox]:checked { background:var(--accent); box-shadow:none; }
+:is(.check-row,#clientJoinControllersOption) input[type=checkbox]:checked::before { transform:translateX(16px); background:var(--on-accent); }
+:is(.check-row,#clientJoinControllersOption) input[type=checkbox]:checked:active::before { transform:translateX(11px); }
+:is(.check-row,#clientJoinControllersOption) input[type=checkbox]:disabled { opacity:.45; cursor:not-allowed; }
+:is(.check-row,#clientJoinControllersOption) input[type=checkbox]:focus-visible { outline:2px solid var(--focus); outline-offset:2px; }
+
+/* ── Fields ─────────────────────────────────────────── */
+:where(input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=file]),select,textarea) { background-color:var(--surface-card); color:var(--ink); border-color:var(--line-strong); border-radius:var(--radius-input); transition:border-color var(--dur-quick),box-shadow var(--dur-quick); }
+:where(input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=file]),select,textarea):focus { border-color:var(--focus); box-shadow:0 0 0 3px var(--accent-soft); outline:0; }
+::placeholder { color:var(--ink-3); }
+input[type=range] { accent-color:var(--accent-text); }
+
+/* ── Pairing: steps, drop zones ─────────────────────── */
+.step-number { border-color:var(--line-strong); background:var(--surface-raised); color:var(--ink-2); transition:background-color var(--dur-quick),color var(--dur-quick); }
+.step.is-complete .step-number { background:var(--accent); border-color:transparent; color:var(--on-accent); animation:pad-pop var(--dur-stage) var(--ease-spring) both; }
+.quick-path button { border-radius:999px; transition:background-color var(--dur-quick),color var(--dur-quick); }
+.quick-path button[aria-current=step] { background:var(--accent-soft); color:var(--accent-soft-ink); border-color:transparent; }
+.file-button { border-color:var(--line-strong); background:transparent; transition:border-color var(--dur-quick),background-color var(--dur-quick),transform var(--dur-menu) var(--ease-spring); }
+.file-button:hover, .file-button.is-dragging { border-color:var(--accent-text); background:var(--accent-soft); color:var(--accent-soft-ink); transform:scale(1.01); }
+
+/* ── Stage: dark island, a dot grid, a bobbing controller ── */
+.video-stage { background:var(--stage); border-radius:var(--radius-stage); }
+.stage-empty { position:relative; }
+.stage-empty::before { content:""; position:absolute; inset:0; pointer-events:none; background-image:radial-gradient(#ffffff14 1px,transparent 1.5px); background-size:16px 16px; -webkit-mask-image:radial-gradient(ellipse at 50% 50%,#000 10%,transparent 70%); mask-image:radial-gradient(ellipse at 50% 50%,#000 10%,transparent 70%); }
+.stage-empty > * { position:relative; }
+.hero-pad { color:var(--accent); animation:pad-bob 3.2s ease-in-out infinite; }
+.illustration-spark { animation:pad-twinkle 2.4s ease-in-out infinite; }
+.illustration-spark.spark-two { animation-delay:1.2s; }
+
+/* ── Notices, toasts, dialogs ───────────────────────── */
+.notice { border-radius:14px; }
+.toast { border-radius:var(--radius-lg); box-shadow:var(--shadow-pop); animation:pad-toast var(--dur-stage) var(--ease-spring) both; }
+dialog { background:var(--surface-card); color:var(--ink); border-color:var(--line); border-radius:var(--radius-xl); box-shadow:var(--shadow-dialog); }
+dialog[open] { animation:pad-dialog var(--dur-stage) var(--ease-spring) both; }
+dialog[open]::backdrop { background:var(--scrim); animation:pad-fade var(--dur-menu) var(--ease-out) both; }
+.tour-popover { border-color:var(--accent-line); }
+
+/* ── Theme toggle ───────────────────────────────────── */
+.theme-toggle .icon { width:16px; height:16px; transition:transform var(--dur-menu) var(--ease-spring),opacity var(--dur-quick); }
+.theme-toggle .icon-sun { display:none; }
+[data-theme=light] .theme-toggle .icon-sun { display:block; }
+[data-theme=light] .theme-toggle .icon-moon { display:none; }
+.theme-toggle:hover .icon { transform:rotate(-20deg); }
+
+/* ── Host setup: two columns on wide screens instead of one tall column ── */
+@media (min-width:1100px) {
+  .call-shell #hostPanel:not([data-session=active]):not(:has(#hostMonitorToggle:not([hidden]))) { grid-template-columns:minmax(0,1160px); }
+  .call-shell #hostSetupCard:not(:has(#hostSessionContent:not([hidden]))) { display:grid; grid-template-columns:minmax(0,1.1fr) minmax(0,1fr); column-gap:28px; align-items:start; align-content:start; }
+  .call-shell #hostSetupCard:not(:has(#hostSessionContent:not([hidden]))) > * { grid-column:2; min-width:0; }
+  .call-shell #hostSetupCard:not(:has(#hostSessionContent:not([hidden]))) > .host-setup-header { grid-column:1 / -1; }
+  .call-shell #hostSetupCard:not(:has(#hostSessionContent:not([hidden]))) > #hostSourceSetup { grid-column:1; grid-row:2 / span 12; margin:16px 0 0; }
+  .call-shell #hostSetupCard:not(:has(#hostSessionContent:not([hidden]))) > #hostMediaPermissions { margin-top:16px; }
+  .call-shell #hostSetupCard:not(:has(#hostSessionContent:not([hidden]))) > #hostCreate { margin-top:14px; }
+}
+
+/* ── Controller test: a real gamepad that lights up ── */
+.pad-live-test summary { display:inline-flex; align-items:center; gap:6px; padding:5px 12px 5px 10px; border-radius:999px; background:var(--surface-raised); color:var(--ink-2); font-weight:600; list-style:none; transition:background-color var(--dur-quick),color var(--dur-quick); }
+.pad-live-test summary::-webkit-details-marker { display:none; }
+.pad-live-test summary::before { content:""; width:6px; height:6px; border-right:1.7px solid currentColor; border-bottom:1.7px solid currentColor; transform:rotate(-45deg); transition:transform var(--dur-menu) var(--ease-spring); }
+.pad-live-test[open] summary::before { transform:rotate(45deg) translate(-1px,-1px); }
+.pad-live-test summary:hover, .pad-live-test[open] summary { background:var(--accent-soft); color:var(--accent-soft-ink); }
+.pad-live-test summary:focus-visible { outline:2px solid var(--focus); outline-offset:2px; }
+.pad-live-body { gap:18px; padding:10px 0 4px; }
+.pad-live { width:240px; height:138px; overflow:visible; }
+.pad-live .pad-body { fill:var(--surface-raised); stroke:var(--line-strong); stroke-width:1.5; }
+.pad-live .pad-key { fill:var(--surface-hover); stroke:var(--line-strong); stroke-width:1; transform-box:fill-box; transform-origin:center; transition:fill var(--dur-press),stroke var(--dur-press),transform var(--dur-press) var(--ease-out),filter var(--dur-quick); }
+.pad-live .pad-small { fill:var(--surface-card); }
+.pad-live .pad-home { fill:var(--surface-card); stroke:var(--ink-3); }
+.pad-live .pad-dpad-hub { fill:var(--surface-hover); }
+.pad-live .pad-key.is-pressed { fill:var(--accent); stroke:var(--accent); transform:scale(.88); filter:drop-shadow(0 0 5px color-mix(in srgb,var(--accent) 70%,transparent)); }
+.pad-live .pad-trigger { fill:var(--surface-hover); stroke:var(--line-strong); stroke-width:1; }
+.pad-live .pad-trigger-fill { fill:var(--accent); transform-box:fill-box; transform-origin:left center; transform:scaleX(var(--v,0)); transition:transform 60ms linear; }
+.pad-live .pad-trigger-fill.is-right { transform-origin:right center; }
+.pad-live .pad-stick-well { fill:var(--surface-card); stroke:var(--line-strong); stroke-width:1; }
+.pad-live .pad-stick-ring { fill:none; stroke:transparent; stroke-width:2.5; transition:stroke var(--dur-press); }
+.pad-live .pad-stick-ring.is-pressed { stroke:var(--accent); }
+.pad-live .pad-stick-line { stroke:var(--accent); stroke-width:2; stroke-linecap:round; opacity:.55; }
+.pad-live .pad-stick { fill:var(--surface-hover); stroke:var(--ink-2); stroke-width:1.5; transition:fill var(--dur-quick),stroke var(--dur-quick); }
+.pad-live .pad-stick.is-moved { fill:var(--accent); stroke:var(--accent); }
+.pad-live-body p { font-family:var(--font-mono); font-size:12px; color:var(--ink-2); }
+@media (max-width:600px) { .pad-live { width:176px; height:101px; } }
+
+/* Mapping editor: stick dials and trigger meters in the same language */
+.mapper-stick { border-color:var(--line-strong); background:radial-gradient(circle,var(--surface-card) 62%,var(--surface-raised) 63%); box-shadow:inset 0 0 0 1px var(--line); }
+.mapper-stick::before, .mapper-stick::after { content:""; position:absolute; background:var(--line); }
+.mapper-stick::before { left:50%; top:10%; bottom:10%; width:1px; }
+.mapper-stick::after { top:50%; left:10%; right:10%; height:1px; }
+.mapper-stick-dot { z-index:1; width:14px; height:14px; margin:-2.5px 0 0 -2.5px; background:var(--accent); box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 25%,transparent),0 0 10px color-mix(in srgb,var(--accent) 50%,transparent); }
+.mapper-stick output { font-family:var(--font-mono); color:var(--ink-3); }
+.mapper-group progress { appearance:none; -webkit-appearance:none; height:8px; border:0; border-radius:999px; background:var(--surface-raised); overflow:hidden; }
+.mapper-group progress::-webkit-progress-bar { background:var(--surface-raised); border-radius:999px; }
+.mapper-group progress::-webkit-progress-value { background:var(--accent); border-radius:999px; transition:width 60ms linear; }
+.mapper-group progress::-moz-progress-bar { background:var(--accent); border-radius:999px; }
+
+/* ── Pass 2 ─────────────────────────────────────────── */
+
+/* Fields: one clear focus treatment (border + halo), not three rings */
+:where(input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=file]),select,textarea):focus-visible { outline:0; }
+
+/* Open panels make room on wide screens instead of covering the page */
+@media (min-width:1240px) {
+  body.call-shell main { transition:none; }
+  body.call-shell:has(.call-sheet[open]:not(.chat-sheet):not(.prejoin-sheet)) main { padding-right:440px; }
+}
+
+/* Settings tabs: compact, one mint pill */
+.settings-tabs { padding:10px 0 14px; gap:2px; }
+.settings-tabs [role=tab] { min-height:38px; padding:6px 8px; font-size:12px; font-weight:600; line-height:1.2; text-align:center; }
+.sectioned-settings .settings-tabs { border-bottom:1px solid var(--line); }
+.settings-tabs [role=tab]:not([aria-selected=true]) .icon { opacity:.7; }
+
+/* Call bar tooltips: the hidden labels float up on hover / keyboard focus */
+@media (min-width:701px) {
+  .call-shell .call-toolbar .button:has(> .icon) { position:relative; overflow:visible; }
+  .call-shell .call-toolbar .button:has(> .icon) > span:not(.chat-unread) { display:block; position:absolute; left:50%; bottom:calc(100% + 12px); z-index:6; transform:translate(-50%,6px) scale(.94); transform-origin:50% 100%; padding:6px 10px; border-radius:10px; background:var(--ink); color:var(--surface-card); font:600 12px/16px var(--font-sans); letter-spacing:0; white-space:nowrap; opacity:0; pointer-events:none; transition:opacity var(--dur-quick) var(--ease-in),transform var(--dur-quick) var(--ease-in); }
+  .call-shell .call-toolbar .button:has(> .icon) > span:not(.chat-unread)::after { content:none!important; }
+  .call-shell .call-toolbar .button:has(> .icon):is(:hover,:focus-visible) > span:not(.chat-unread) { opacity:1; transform:translate(-50%,0) scale(1); transition:opacity var(--dur-menu) var(--ease-out) .3s,transform var(--dur-menu) var(--ease-spring) .3s; }
+  .call-shell .call-toolbar .button:is(.camera-settings-button,.mic-settings-button,.screen-settings-button) > span { display:none!important; }
+}
+
+/* Join with: device tiles lift, the open one turns mint */
+.join-device-choices .device-choice { border-radius:14px; border-color:var(--line); background:var(--surface-card); box-shadow:none; transition:border-color var(--dur-quick),background-color var(--dur-quick),transform var(--dur-menu) var(--ease-spring); }
+.join-device-choices .device-choice:hover { background:var(--surface-raised); transform:translateY(-1px); }
+.device-choice[aria-expanded=true] { border-color:var(--accent-line); background:var(--accent-soft); color:var(--accent-soft-ink); }
+.device-choice[aria-expanded=true] .join-device-state { color:var(--accent-soft-ink); opacity:.8; }
+
+/* Controller cards: a player disc, a friendly name, a calm selected state */
+.connected-controller { --p:var(--surface-hover); border-radius:14px; border:1px solid var(--line); background:var(--surface-card); transition:border-color var(--dur-quick),background-color var(--dur-quick); animation:pad-rise var(--dur-menu) var(--ease-out) both; }
+.call-sheet .connected-controller { background:var(--surface-card); border-color:var(--line); }
+.connected-controller:hover { border-color:var(--line-strong); }
+.connected-controller .controller-device-icon { box-sizing:content-box; width:18px; height:18px; padding:9px; border-radius:999px; background:var(--p); color:var(--ink); transition:background-color var(--dur-quick),color var(--dur-quick); }
+.connected-controller:has(.controller-select[aria-pressed=true]) { --p:var(--accent-soft); border-color:var(--accent-line); }
+.connected-controller:has(.controller-select[aria-pressed=true]) .controller-device-icon { color:var(--accent-soft-ink); }
+.connected-controller[data-player]:not(#_) .controller-device-icon { color:var(--on-accent); animation:pad-pop var(--dur-stage) var(--ease-spring) both; }
+.connected-controller[data-player="1"]:not(#_) { --p:var(--player-1); } .connected-controller[data-player="2"]:not(#_) { --p:var(--player-2); } .connected-controller[data-player="3"]:not(#_) { --p:var(--player-3); }
+.connected-controller[data-player="4"]:not(#_) { --p:var(--player-4); } .connected-controller[data-player="5"]:not(#_) { --p:var(--player-5); } .connected-controller[data-player="6"]:not(#_) { --p:var(--player-6); }
+.connected-controller .controller-select strong { font-size:14px; font-weight:650; color:var(--ink); }
+.connected-controller .controller-select[aria-pressed=true] strong { color:var(--ink); }
+.connected-controller .controller-select .controller-use-status { font-size:12px; color:var(--ink-3); }
+.connected-controller .controller-select[aria-pressed=true] .controller-use-status { color:var(--accent-text); }
+.connected-controller .controller-select[aria-pressed=true]::before { content:""; width:20px; height:20px; border-radius:999px; background:var(--accent) center/12px no-repeat; -webkit-mask:none; box-shadow:inset 0 0 0 6px var(--accent); }
+.connected-controller .controller-select[aria-pressed=true]::after { content:""; grid-column:2; grid-row:1 / 3; align-self:center; justify-self:center; width:9px; height:5px; margin-top:-2px; border-left:2px solid var(--on-accent); border-bottom:2px solid var(--on-accent); transform:rotate(-45deg); }
+.connected-controllers[data-sharing=false] .connected-controller { opacity:.6; }
+.controller-sharing-card { border-radius:14px; border-color:var(--line); background:var(--surface-card); transition:border-color var(--dur-quick),background-color var(--dur-quick); }
+.controller-sharing-card:has(input:checked) { border-color:var(--accent-line); background:var(--accent-soft); }
+.controller-sharing-card:has(input:checked) #guestLocalInputNote { color:var(--accent-soft-ink); opacity:.85; }
+
+/* People: a pill count, roomy rows, the same avatars as the system */
+.count { min-width:22px; height:22px; padding:0 7px; border:0; border-radius:999px; background:var(--accent-soft); color:var(--accent-soft-ink); font-size:11px; font-weight:700; }
+.avatar { width:38px; height:38px; font-family:var(--font-display); font-size:15px; font-weight:700; background:var(--surface-hover); color:var(--ink); }
+.peerRow .avatar, .self-person .avatar { position:relative; }
+.call-shell .peerRow { padding:12px; margin:0 -12px; border-top:0; border-radius:14px; transition:background-color var(--dur-quick); }
+.call-shell .peerRow:hover { background:var(--surface-raised); }
+.peerRow .actions button { border-radius:999px; padding:6px 12px; transition:background-color var(--dur-quick),color var(--dur-quick); }
+.peerRow .actions button:hover { background:var(--surface-hover); color:var(--ink); }
+.empty-people { display:flex; flex-direction:column; align-items:center; gap:10px; margin:12px 0 4px; padding:22px 16px; border:1.5px dashed var(--line-strong); border-radius:var(--radius-lg); color:var(--ink-3); font-size:13px; text-align:center; }
+.empty-people::before { content:""; width:40px; height:40px; background:var(--accent); -webkit-mask:url("/design/assets/icons/pad.svg") center/contain no-repeat; mask:url("/design/assets/icons/pad.svg") center/contain no-repeat; animation:pad-bob 3.2s ease-in-out infinite; }
+
+/* Status and pairing messages */
+.pair-status { border-radius:14px; border:0; background:var(--surface-raised); color:var(--ink-2); }
+.pair-status.is-ready, .pair-status.success, .pair-status[data-state=ready] { background:var(--accent-soft); color:var(--accent-soft-ink); }
+.pair-error { border-radius:14px; background:var(--danger-soft); color:var(--danger-ink); border-color:transparent; }
+.next-step { border-radius:var(--radius-lg); border-color:var(--accent-line); background:linear-gradient(135deg,var(--accent-soft),var(--surface-card) 70%); }
+.next-step h4 { font-family:var(--font-display); font-size:20px; letter-spacing:-.3px; }
+.toast { display:inline-flex; align-items:center; gap:10px; padding:11px 18px 11px 16px; }
+.toast[hidden] { display:none; }
+.toast::before { content:""; flex:none; width:8px; height:8px; border-radius:999px; background:var(--on-accent); }
+
+/* Pairing hero: the primary action pops a little */
+#clientEmpty .button.primary.large { min-width:220px; }
+#clientEmpty .button.primary.large .icon { transition:transform var(--dur-menu) var(--ease-spring); }
+#clientEmpty .button.primary.large:hover .icon { transform:translateY(-2px) rotate(-6deg); }
+
+/* Headings inside sheets and cards */
+.call-sheet .settings-card > summary, .call-sheet .section-heading h3, .people-card .section-heading h3 { letter-spacing:-.2px; }
+
+/* ── Keyframes ──────────────────────────────────────── */
+@keyframes pad-live { 0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--accent) 60%,transparent)} 70%,100%{box-shadow:0 0 0 7px transparent} }
+@keyframes pad-rise { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:none} }
+@keyframes pad-sheet { from{opacity:0;transform:translateY(14px) scale(.97)} to{opacity:1;transform:none} }
+@keyframes pad-pop { 0%{opacity:0;transform:scale(.6)} 100%{opacity:1;transform:none} }
+@keyframes pad-bob { 0%,100%{transform:translateY(0) rotate(-3deg)} 50%{transform:translateY(-6px) rotate(3deg)} }
+@keyframes pad-twinkle { 0%,100%{opacity:.35;transform:scale(.85)} 50%{opacity:1;transform:scale(1.1)} }
+@keyframes pad-toast { from{opacity:0;transform:translate(-50%,16px) scale(.96)} to{opacity:1;transform:translate(-50%,0)} }
+@keyframes pad-dialog { from{opacity:0;transform:translateY(14px) scale(.95)} to{opacity:1;transform:none} }
+@keyframes pad-fade { from{opacity:0} to{opacity:1} }
+
+@media (prefers-reduced-motion:reduce) {
+  *,*::before,*::after { animation-duration:1ms!important; animation-iteration-count:1!important; animation-delay:0ms!important; transition-duration:1ms!important; transition-delay:0ms!important; }
+}
+
+/* Stable navigation and disclosures, including private device setup. */
+@media (min-width:861px) {
+  .call-shell .app-header { display:grid; grid-template-columns:minmax(0,1fr) auto minmax(0,1fr); }
+  .call-shell .app-header > .brand { grid-column:1; grid-row:1; min-width:0; }
+  .call-shell .app-header > .mode-switch { grid-column:2; grid-row:1; justify-self:center; }
+  .call-shell .app-header > .header-right { grid-column:3; grid-row:1; justify-self:end; min-width:0; }
+}
+.session-media-permissions > details { flex:0 0 100%; min-width:0; box-sizing:border-box; }
+.session-media-permissions > .check-row { min-height:32px; }
+.session-media-permissions > details .check-row { margin:10px 0; line-height:1.5; align-items:center; }
+.session-media-permissions > details > summary { min-height:40px; }
+.call-shell .session-input-setup { margin:16px 0; padding:14px 0; border:0; border-top:1px solid var(--line); border-radius:0; background:transparent; }
+.call-shell .session-input-setup > summary { min-height:36px; font-size:inherit; font-weight:600; color:var(--ink-2); }
+.call-shell .prejoin-sheet[open],.call-shell .prejoin-sheet[open] .call-sheet-content > * { animation:none; }
+.voice-preflight { display:grid; gap:10px; margin:12px 0; }
+.voice-preflight .voice-input-meter { display:flex; align-items:center; gap:12px; font-size:12px; }
+.voice-preflight meter { flex:1; min-width:50px; height:16px; accent-color:var(--accent); }
+.voice-preflight p { margin:0; }
+/* Private tests need visible permission/error feedback as well as device choices. */
+.call-shell .prejoin-sheet #clientVoice > [data-voice=status] { display:block; }
+
+@media (min-width:561px) and (max-width:1000px) {
+  .call-shell .app-header { display:grid; grid-template-columns:minmax(0,1fr) auto; height:auto; padding-block:12px; row-gap:10px; }
+  .call-shell .app-header > .brand { grid-column:1; grid-row:1; }
+  .call-shell .app-header > .header-right { grid-column:2; grid-row:1; }
+  .call-shell .app-header > .mode-switch { grid-column:1 / -1; grid-row:2; justify-self:center; }
+}
+
+/* One tactile language for mouse, touch and keyboard controls. Scale never
+   changes layout; release feedback is short and runs only on activation. */
+body :is(button,a.button),.call-shell .call-toolbar .button {
+  -webkit-tap-highlight-color:transparent;
+  transition:transform var(--dur-menu) var(--ease-spring),scale var(--dur-menu) var(--ease-spring),box-shadow var(--dur-press) var(--ease-out),background-color var(--dur-quick),border-color var(--dur-quick),color var(--dur-quick),opacity var(--dur-quick);
+}
+body summary { transition:color var(--dur-quick),background-color var(--dur-quick),scale var(--dur-menu) var(--ease-spring); }
+body :is(button,a.button,summary):not(:disabled):not([aria-disabled=true]):active { transition-duration:var(--dur-press); }
+body .button:not(:disabled):active,.call-shell .call-toolbar .button:not(:disabled):active { box-shadow:inset 0 1px 2px #0002; }
+body :is(button,a.button)[aria-disabled=true],body button:disabled { scale:1; }
+@media (hover:hover) and (pointer:fine) {
+  body :is(.button,.help-button,.source-tile,.controller-select,.participant-quick-button,.participant-media-button,.tile-layout-controls button,.view-swap-controls button,.mobile-navigation button):not(:disabled):not([aria-disabled=true]):hover { transform:translateY(-1px); }
+  body :is(.button,.help-button,.source-tile,.controller-select):not(:disabled):not([aria-disabled=true]):active { transform:translateY(2px); }
+  .source-tile:hover .source-preview { border-color:var(--accent-line); }
+  summary:hover { color:var(--ink); }
+}
+.source-tile { box-shadow:0 2px 0 color-mix(in srgb,var(--line) 70%,transparent); }
+.source-tile[aria-pressed=true] { background:var(--accent-soft); color:var(--accent-soft-ink); }
+.source-picker-panel:not([hidden]),.peer-menu[open] .peer-menu-actions { animation:pad-menu-in var(--dur-menu) var(--ease-spring) both; transform-origin:top right; }
+.source-picker-trigger .icon,.controller-device-icon,.participant-media-button .icon,.tile-layout-controls button svg { transition:color var(--dur-quick),scale var(--dur-menu) var(--ease-spring); }
+.source-picker-trigger[aria-expanded=true] > .icon,.tile-layout-controls button[aria-pressed=true] svg { scale:1.08; }
+:is(.check-row,#clientJoinControllersOption) input[type=checkbox] { transition:background-color var(--dur-quick),box-shadow var(--dur-quick),scale var(--dur-menu) var(--ease-spring); }
+:is(.check-row,#clientJoinControllersOption) input[type=checkbox]::before { transition:transform var(--dur-stage) var(--ease-spring),width var(--dur-press) var(--ease-out),background-color var(--dur-quick); }
+:is(.check-row,#clientJoinControllersOption) input[type=checkbox]:active:not(:disabled) { scale:.96; }
+input[type=range]::-webkit-slider-thumb { transition:scale var(--dur-menu) var(--ease-spring),box-shadow var(--dur-quick); }
+input[type=range]::-moz-range-thumb { transition:scale var(--dur-menu) var(--ease-spring),box-shadow var(--dur-quick); }
+input[type=range]:active::-webkit-slider-thumb { scale:1.16; }
+input[type=range]:active::-moz-range-thumb { scale:1.16; }
+/* Drag geometry and live controller indicators follow input immediately. */
+body :is(.streamer-resize,[role=separator]) { scale:1!important; transform:none!important; transition:background-color var(--dur-quick),opacity var(--dur-quick); }
+.tile-divider:focus-visible,.tile-divider.dragging { background:var(--accent-soft); }
+.pad-live .pad-key,.pad-live .pad-trigger-fill,.mapper-stick-dot { transition:none; }
+@keyframes pad-menu-in { from{opacity:0;translate:0 5px;scale:.98} to{opacity:1;translate:0 0;scale:1} }
+@media (prefers-reduced-motion:reduce) {
+  body :is(button,a.button,summary,input),.call-shell .call-toolbar .button { scale:1!important; }
+  body :is(button,a.button):hover,body :is(button,a.button):active,.call-shell .call-toolbar .button:active { transform:none!important; }
+  input[type=range]::-webkit-slider-thumb { scale:1!important; }
+  input[type=range]::-moz-range-thumb { scale:1!important; }
+}
+
+.chat-message:nth-last-child(-n+3) { animation:pad-message-in var(--dur-menu) var(--ease-spring) both; transform-origin:bottom left; }
+.chat-message[data-mine=true] { transform-origin:bottom right; }
+.call-hint:not([hidden]) { animation:pad-menu-in var(--dur-quick) var(--ease-out) both; }
+@keyframes pad-message-in { from{opacity:0;translate:0 4px;scale:.97} to{opacity:1;translate:0 0;scale:1} }
+
+.mapper-group progress::-webkit-progress-value { transition:none; }
+.mapper-group progress::-moz-progress-bar { transition:none; }
+
+/* Finish the small interactions: fields, disclosures, selections and guide steps. */
+body :is(select,input[type=number],input[type=color],input[type=range]) { transition:border-color var(--dur-quick),background-color var(--dur-quick),box-shadow var(--dur-menu) var(--ease-out); }
+body select:not(:disabled) { cursor:pointer; }
+body select:not(:disabled):active { border-color:var(--accent-text); }
+body input[type=range] { border-radius:999px; }
+body input[type=range]:active { box-shadow:0 0 0 4px var(--accent-soft); border-radius:999px; }
+body a[href]:not(.button) { text-decoration-color:color-mix(in srgb,currentColor 45%,transparent); text-underline-offset:3px; transition:color var(--dur-quick),text-decoration-color var(--dur-quick),opacity var(--dur-press); }
+body a[href]:not(.button):active { opacity:.65; }
+@media (hover:hover) and (pointer:fine) {
+  body select:not(:disabled):hover { border-color:var(--ink-3); background-color:var(--surface-raised); }
+  body a[href]:not(.button):hover { text-decoration-color:currentColor; }
+}
+details.advanced { transition:border-color var(--dur-menu),background-color var(--dur-menu); }
+details.advanced[open] > summary { color:var(--ink); }
+.source-picker-trigger > .icon:last-child { rotate:0deg; transition:rotate var(--dur-stage) var(--ease-spring),scale var(--dur-menu) var(--ease-spring); }
+.source-picker-trigger[aria-expanded=true] > .icon:last-child { rotate:180deg; }
+.source-preview { position:relative; }
+.source-preview img { animation:pad-thumbnail-in 160ms ease-out both; }
+.source-tile[aria-pressed=true] .source-preview::after { content:'✓'; position:absolute; right:6px; bottom:6px; display:grid; place-items:center; width:22px; height:22px; border-radius:50%; background:var(--accent); color:var(--on-accent); font-size:14px; font-weight:800; box-shadow:0 2px 6px #0004; animation:pad-selection-in var(--dur-menu) var(--ease-spring) both; pointer-events:none; }
+.connected-controller .controller-select[aria-pressed=true]::before,.connected-controller .controller-select[aria-pressed=true]::after { animation:pad-selection-in var(--dur-menu) var(--ease-spring) both; }
+.keyboard-binding.is-listening,[data-extra=key].is-listening { border-color:var(--accent-text); color:var(--accent-soft-ink); background:var(--accent-soft); box-shadow:0 0 0 3px var(--accent-soft); animation:pad-listen-in var(--dur-menu) var(--ease-out) both; }
+.file-button.is-dragging { animation:pad-drop-ready 260ms var(--ease-out) both; }
+.streamer-camera:active { outline:2px solid var(--streamer-accent,var(--accent)); outline-offset:2px; }
+.tour-popover { transform-origin:center; }
+.tour-popover #tourProgress { font-variant-numeric:tabular-nums; }
+@keyframes pad-selection-in { from{opacity:.3;scale:.72} 70%{opacity:1;scale:1.1} to{opacity:1;scale:1} }
+@keyframes pad-thumbnail-in { from{opacity:0} to{opacity:1} }
+@keyframes pad-listen-in { from{box-shadow:0 0 0 7px var(--accent-soft)} to{box-shadow:0 0 0 3px var(--accent-soft)} }
+@keyframes pad-drop-ready { from{outline-offset:7px} to{outline-offset:3px} }
+
+/* A guide's actions stay reachable while long explanations scroll. */
+.tour-popover[open] { display:flex; flex-direction:column; gap:12px; overflow:hidden; padding:16px; min-height:min(260px,calc(100dvh - 24px)); }
+.tour-popover > .dialog-heading { flex:0 0 auto; margin:0; }
+.tour-content { flex:1 1 auto; min-height:0; overflow:auto; overscroll-behavior:contain; scrollbar-width:thin; padding-right:3px; }
+.tour-content .tour-topics { margin:0 0 12px; }
+.tour-content #tourBody { font-size:13px; line-height:1.6; margin:12px 0; }
+.tour-footer { flex:0 0 auto; display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:8px; border-top:1px solid var(--line); padding-top:12px; }
+.tour-footer .tour-actions { grid-column:1 / -1; margin:0; }
+.tour-footer #tourOptional { grid-column:1 / -1; }
+.tour-footer > .button { width:100%; min-width:0; margin:0; min-height:32px; padding:7px 8px; font-size:11px; }
+/* Keep pointer hit areas stationary through hover, press and rebound. */
+body :is(button,a.button,summary,.file-button,input[type=checkbox],input[type=radio]):is(:hover,:active) { transform:none!important; scale:1!important; }
+
+/* One hint per control; native titles and animated label bubbles are redundant. */
+@media(min-width:701px) {
+  .call-shell .call-toolbar .button:has(> .icon) > span:not(.chat-unread) {position:absolute!important;width:1px!important;height:1px!important;margin:-1px!important;padding:0!important;overflow:hidden!important;clip-path:inset(50%)!important;opacity:0!important;pointer-events:none!important}
+  .call-shell .call-toolbar .button[data-tooltip] {position:relative;overflow:visible}
+  .call-shell .call-toolbar .button[data-tooltip]::after {content:attr(data-tooltip);position:absolute;left:50%;bottom:calc(100% + 10px);transform:translateX(-50%);z-index:30;width:max-content;max-width:min(280px,70vw);white-space:normal;padding:7px 10px;border-radius:9px;background:var(--ink);color:var(--surface-card);font:500 12px/1.4 var(--font-sans);opacity:0;pointer-events:none;transition:opacity .12s ease .25s}
+  .call-shell .call-toolbar .button[data-tooltip]:is(:hover,:focus-visible)::after {opacity:1}
+  .call-shell .call-toolbar #clientUnmute.needs-audio-gesture > span {position:static!important;width:auto!important;height:auto!important;clip-path:none!important;opacity:1!important;margin:0!important}
+}
+
+/* Toggle travel lives entirely inside the stationary input hit area. Alternating
+   names restart a new activation without forcing layout or creating wrappers. */
+:is(.check-row,#clientJoinControllersOption) input[type=checkbox] {--ui-switch-end:0px;--ui-switch-over:-2px}
+:is(.check-row,#clientJoinControllersOption) input[type=checkbox]:checked {--ui-switch-end:16px;--ui-switch-over:18px}
+:is(.check-row,#clientJoinControllersOption) input[type=checkbox][data-switch-motion]::before {animation-duration:330ms;animation-timing-function:cubic-bezier(.2,.75,.25,1);animation-fill-mode:both}
+:is(.check-row,#clientJoinControllersOption) input[type=checkbox][data-switch-motion=a]::before {animation-name:ui-switch-a}
+:is(.check-row,#clientJoinControllersOption) input[type=checkbox][data-switch-motion=b]::before {animation-name:ui-switch-b}
+@keyframes ui-switch-a {
+  0% {transform:var(--ui-switch-from,translateX(0px))}
+  48% {transform:translateX(var(--ui-switch-over)) scale(.93,1.08)}
+  75% {transform:translateX(var(--ui-switch-end)) scale(1.06,.95)}
+  100% {transform:translateX(var(--ui-switch-end)) scale(1)}
+}
+@keyframes ui-switch-b {
+  0% {transform:var(--ui-switch-from,translateX(0px))}
+  48% {transform:translateX(var(--ui-switch-over)) scale(.93,1.08)}
+  75% {transform:translateX(var(--ui-switch-end)) scale(1.06,.95)}
+  100% {transform:translateX(var(--ui-switch-end)) scale(1)}
+}
+@media(hover:hover) and (pointer:fine) {
+  :is(.check-row,#clientJoinControllersOption):has(input:not(:disabled)):hover {color:var(--ink)}
+  :is(.check-row,#clientJoinControllersOption) input[type=checkbox]:hover:not(:disabled) {box-shadow:inset 0 0 0 1.5px var(--accent-text),0 0 0 3px var(--accent-soft)}
+  .tile-remove:hover,.host-share-chip > .button:hover {background:var(--danger);color:var(--on-danger)}
+}
+@media(prefers-reduced-motion:reduce) {
+  :is(.check-row,#clientJoinControllersOption) input[type=checkbox]::before {animation:none!important;transition:none!important}
+}

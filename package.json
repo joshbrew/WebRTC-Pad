@@ -1,0 +1,56 @@
+{
+  "name": "webrtc-pad",
+  "version": "0.1.0",
+  "private": true,
+  "description": "WebRTC desktop streaming and remote virtual gamepads",
+  "engines": {
+    "node": ">=22.9"
+  },
+  "type": "module",
+  "scripts": {
+    "start": "node --env-file-if-exists=.env system/scripts/run.mjs start",
+    "setup": "node system/scripts/setup.mjs",
+    "demo:local": "node system/scripts/demo-local.mjs",
+    "setup:turn": "node system/scripts/setup-turn.mjs",
+    "setup:native": "node system/scripts/setup-native.mjs",
+    "dev": "node --env-file-if-exists=.env --watch system/src/server.js",
+    "test": "node --test",
+    "test:qol": "node system/scripts/smoke-qol.mjs",
+    "test:relative": "node system/scripts/smoke-relative-mouse.mjs",
+    "test:portal": "python -B system/test/wayland_portal_test.py",
+    "benchmark:encoders": "node system/scripts/benchmark-encoders.mjs",
+    "benchmark:guest": "node system/scripts/benchmark-guest.mjs",
+    "benchmark:input": "node system/scripts/benchmark-input.mjs",
+    "check": "node --check system/src/server.js && node --check system/src/native-media.js && node --check system/src/native-audio.js && node --check system/src/encoder-scan.js && node --check system/public/input-wire.js && node --check system/public/app.js && node --check system/public/ui.js && node --check system/public/playback.js && node --check system/public/input-clock.js && node --check system/public/codecs.js && node --check system/public/quality.js && node --check system/public/stats.js && node --check system/scripts/setup.mjs && node --check system/scripts/launch.mjs && node --check system/scripts/install-utils.mjs && node --check system/scripts/setup-native.mjs && node --check system/scripts/native-version.mjs && node --check system/scripts/setup-turn.mjs && node --check system/scripts/configure.mjs && node --check system/scripts/config-utils.mjs && node --check system/src/macos-desktop.js && node --check system/scripts/build-macos.mjs && node --check system/public/mac-desktop.js && node --check system/src/desktop-capabilities.js && node --check system/src/desktop-input.js && node --check system/public/desktop.js && node --check system/public/cursors.js && node --check system/scripts/run.mjs && node --check system/src/guest-runtime.js && node --check system/public/guest-platform.js && node --check system/src/guest-input.js && node --check system/public/guest-input.js && node --check system/scripts/setup-guest-input.mjs && node --check system/src/session-server.js && node --check system/public/sessions.js && node --check system/scripts/session-server.mjs && node --check system/public/stage-controls.js && node --check system/public/voice.js && node --check system/public/chat.js && node --check system/public/camera.js && node --check system/public/camera-quality.js && node --check system/public/voice-quality.js && node --check system/public/diagnostics.js && node --check system/public/diagnostic-history.js && node --check system/public/mobile-navigation.js && node --check system/public/handoff.js && node --check system/public/keyboard-mapping.js && node --check system/public/controller-presence.js && node --check system/public/host-shares.js && node --check system/public/guest-tiles.js && node --check system/public/call-settings.js && node --check system/public/call-comfort.js && node --check system/public/call-shell.js && node --check system/public/capture-region.js && node --check system/public/view-popouts.js && node --check system/public/view-window.js && node --check system/src/capture-region.js && node --check system/public/file-transfer.js && node --check system/public/voice-controls.js && node --check system/public/session-presets.js && node --check system/public/connection-check.js && node --check system/public/participants.js && node --check system/public/screen-room.js && node --check system/public/screen-quality.js && node --check system/public/screen-layout.js && node --check system/public/tile-adjustments.js && node --check system/public/media-controls.js && node --check system/public/app-inputs.js && node --check system/public/app-input-wire.js && node --check system/src/app-input-bridge.js && node --check system/public/input-api.js && node --check system/public/reverse-controllers.js && node --check system/src/controller-receiver.js && node --check system/public/controller-platform.js && node --check system/scripts/build-macos-hid.mjs && node --check system/public/source-picker.js && node --check system/public/video-handover.js && node --check system/public/video-health.js && node --check system/src/source-thumbnail.js && node --check system/public/last-session.js && node --check system/public/interaction-motion.js",
+    "driver:windows": "npm install --no-save --package-lock=false vigemclient@1.5.3",
+    "driver:check": "node --env-file-if-exists=.env system/scripts/check-driver.js",
+    "driver:macos:build": "node system/scripts/build-macos-hid.mjs",
+    "package": "python system/scripts/package.py",
+    "configure": "node system/scripts/configure.mjs",
+    "host": "node --env-file-if-exists=.env system/scripts/run.mjs host",
+    "join": "node --env-file-if-exists=.env system/scripts/run.mjs join",
+    "setup:guest": "node system/scripts/setup-guest-input.mjs",
+    "test:guest": "python -B system/test/guest_posix_test.py",
+    "test:desktop": "python -B system/test/linux_desktop_test.py",
+    "ice:check": "node system/scripts/check-ice.mjs",
+    "session:server": "node --env-file-if-exists=.env system/scripts/run.mjs session-server",
+    "test:participants": "node system/scripts/smoke-participants.mjs",
+    "test:guest-screens": "node system/scripts/smoke-guest-screens.mjs",
+    "test:app-inputs": "node system/scripts/smoke-app-inputs.mjs",
+    "test:reverse-controllers": "node system/scripts/smoke-reverse-controllers.mjs",
+    "test:native-handover": "node system/scripts/smoke-native-handover.mjs",
+    "test:action-feedback": "node system/scripts/smoke-action-feedback.mjs",
+    "test:motion": "node system/scripts/smoke-motion.mjs",
+    "test:host-call": "node system/scripts/smoke-host-call.mjs",
+    "test:device-menus": "node system/scripts/smoke-device-menus.mjs",
+    "test:last-session": "node system/scripts/smoke-last-session.mjs",
+    "test:linux-gamepad": "python -B system/test/linux_gamepad_test.py"
+  },
+  "dependencies": {
+    "uplot-webgpu": "0.2.0",
+    "ws": "^8.22.0"
+  },
+  "optionalDependencies": {
+    "vigemclient": "1.5.3"
+  }
+}

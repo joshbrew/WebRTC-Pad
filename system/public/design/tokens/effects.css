@@ -1,0 +1,26 @@
+/* Shadows, focus, blur, motion */
+:root{
+--shadow-tab:0 2px 4px #0002;
+--shadow-chip:0 2px 8px #0005;
+--shadow-toast:0 10px 40px #0005;
+--shadow-tour:0 15px 65px #000b;
+--shadow-dialog:0 30px 100px #0008;
+--shadow-live-ring:0 0 0 3px #c3ed9312;
+--shadow-illustration:8px 10px 0 -2px #101512,8px 10px 0 -1px #273329;
+--shadow-tour-target:0 0 0 9px #b3ed7520,0 0 28px #c8f79c55;
+--shadow-cursor:drop-shadow(0 1px 2px #000);
+
+--focus-ring:2px solid var(--focus);--focus-offset:2px;
+
+--blur-label:blur(10px);/* @kind other */--blur-backdrop:blur(5px);/* @kind other */
+
+--glow-stage:radial-gradient(ellipse,#c8f5980d,transparent 70%);/* @kind color */
+--gradient-screen:linear-gradient(135deg,#232b24,#181d1b);/* @kind color */
+--grid-mousepad:linear-gradient(#c8f79c10 1px,transparent 1px),linear-gradient(90deg,#c8f79c10 1px,transparent 1px);/* @kind color */
+
+--dur-fast:160ms;/* @kind other */--dur-fade:180ms;/* @kind other */--dur-row:240ms;/* @kind other */--ease:cubic-bezier(.2,.8,.2,1);/* @kind other */
+}
+
+/* Motion from the design system: quick, physical, springy on entry, faster on exit. */
+:root{--dur-press:65ms;--dur-quick:140ms;--dur-menu:220ms;--dur-stage:320ms;--dur-stagger:18ms;--ease-out:cubic-bezier(.2,.8,.2,1);--ease-spring:cubic-bezier(.2,1.6,.35,1);--ease-in:cubic-bezier(.4,0,1,1);
+--radius-sm:6px;--radius-md:12px;--radius-lg:18px;--radius-xl:26px}

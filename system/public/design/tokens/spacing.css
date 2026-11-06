@@ -1,0 +1,23 @@
+/* Spacing & layout — exact values from style.css (irregular on purpose; do not snap to a 4/8 grid). */
+:root{
+--space-3:3px;--space-5:5px;--space-7:7px;--space-8:8px;--space-9:9px;--space-10:10px;--space-12:12px;--space-15:15px;--space-16:16px;--space-18:18px;--space-20:20px;--space-22:22px;--space-24:24px;--space-26:26px;--space-30:30px;--space-36:36px;
+
+--shell-max:1560px;
+--shell-pad:36px;         /* 25px <1190, 16px <560 */
+--header-h:100px;         /* 86px <1190, 76px short viewports */
+--layout-gap:26px;        /* main ↔ sidebar */
+--sidebar-w:326px;
+--sidebar-w-session:360px;
+--sidebar-gap:15px;
+--card-pad:22px;
+--stage-min-h:440px;
+--stage-host-max-w:420px;
+--dialog-w:460px;
+
+--control-h:40px;--control-h-lg:46px;--control-h-sm:32px;--select-h-compact:36px;
+--button-pad:9px 15px;--button-pad-lg:12px 20px;--button-pad-sm:6px 10px;
+--input-pad:10px 11px;
+--icon-size:20px;--icon-size-button:17px;--icon-stroke:1.7;
+
+--radius-kbd:4px;--radius-label:5px;--radius-count:6px;--radius-chip:7px;--radius-8:8px;--radius-input:12px;--radius-button:12px;--radius-12:12px;--radius-tabs:13px;--radius-14:14px;--radius-16:16px;--radius-card:18px;--radius-stage:26px;--radius-pill:999px;--radius-round:50%;
+}

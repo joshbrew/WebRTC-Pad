@@ -1,0 +1,145 @@
+import {launchTestBrowser} from './browser-fixture.mjs';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import {once} from 'node:events';
+import {pathToFileURL} from 'node:url';
+import {createApp} from '../src/server.js';
+const {chromium}=await import(pathToFileURL(process.env.PLAYWRIGHT_MODULE).href);
+const writes=[];
+const app=createApp({env:{},createInjector:async()=>({name:'Pairing usability fixture',setState(slot,state){writes.push(state);},addController(){},removeController(){},close(){}})});
+let browser;
+try {
+  app.server.listen(0,'127.0.0.1');await once(app.server,'listening');
+  browser=await launchTestBrowser(chromium,{channel:'msedge',headless:true});
+  const context=await browser.newContext({viewport:{width:1280,height:950}});
+  await context.route('**/ice?*',r=>r.fulfill({json:{iceServers:[],iceTransportPolicy:'all'}}));
+  await context.addInitScript(()=>{localStorage.setItem('webrtc-pad:block-local-controller-input:v2','false');
+    for(const role of ['host','client'])localStorage.setItem(`webrtc-pad:tour-v1:${role}`,'seen');
+    localStorage.setItem('webrtc-pad:capture-method','browser');
+    window.__captures=0;navigator.mediaDevices.getDisplayMedia=async()=>{window.__captures++;throw new Error('Video is optional');};
+    window.__pairingPeers=[];
+    window.RTCPeerConnection=new Proxy(window.RTCPeerConnection,{construct(target,args,newTarget){const pc=Reflect.construct(target,args,newTarget);window.__pairingPeers.push(pc);return pc;}});
+  });
+  const origin=`http://127.0.0.1:${app.server.address().port}`,errors=[];
+  const firefoxContext=await browser.newContext({userAgent:'Mozilla/5.0 Firefox/151.0'});await firefoxContext.addInitScript(()=>{localStorage.setItem('webrtc-pad:block-local-controller-input:v2','false');for(const role of ['host','client'])localStorage.setItem(`webrtc-pad:tour-v1:${role}`,'seen');});const firefoxUI=await firefoxContext.newPage();firefoxUI.on('pageerror',error=>errors.push(error.message));await firefoxUI.goto(origin+'/?mode=join');
+  await firefoxUI.waitForFunction(()=>!!document.querySelector('#clientFileBrowserNote')?.textContent,null,{polling:100});
+  await firefoxUI.locator('#joinPasteAction').click();assert.equal(await firefoxUI.locator('#clientFileBrowserNote').isVisible(),true);assert.doesNotMatch(await firefoxUI.locator('#clientFileBrowserNote').textContent(),/session link/);
+  await firefoxUI.evaluate(()=>{document.body.dataset.sessionInvites='true';document.dispatchEvent(new CustomEvent('quick-start',{detail:'refresh'}));});
+  assert.equal(await firefoxUI.locator('#clientFileBrowserNote').isVisible(),false);
+  await firefoxUI.evaluate(()=>{document.body.dataset.sessionGuestFiles='true';document.dispatchEvent(new CustomEvent('quick-start',{detail:'refresh'}));});
+  assert.equal(await firefoxUI.locator('#clientFileBrowserNote').isVisible(),true);assert.match(await firefoxUI.locator('#clientFileBrowserNote').textContent(),/session link/);await firefoxContext.close();
+  console.log('PASS: Firefox timing advice appears for manual files and follows hosted/manual workflow selection');
+  const host=await context.newPage(),guest=await context.newPage();
+  for(const page of [host,guest])page.on('pageerror',error=>errors.push(error.message));
+  const upload=(page,id,name,text)=>page.locator(id).setInputFiles({name,mimeType:'text/plain',buffer:Buffer.from(text)});
+  await host.goto(origin);await guest.goto(origin+'/?mode=join');
+  await host.locator('#hostCreate').click();await host.waitForFunction(()=>!document.querySelector('#createInvitation').disabled);
+  const automaticInvite=host.waitForEvent('download');await host.locator('#createInvitation').click();await host.waitForFunction(()=>!!document.querySelector('#hostInvitation').value);
+  assert.match((await automaticInvite).suggestedFilename(),/^webrtc-pad-invite-/);
+  assert.equal(await host.locator('#hostNextAction').textContent(),'Open reply file');
+  const invite=await host.locator('#hostInvitation').inputValue();
+  assert.match(await host.locator('#hostInviteExpiry').textContent(),/expires in \d+:\d{2}/);
+  const inviteDownload=host.waitForEvent('download');await host.locator('#createInvitation').click();
+  assert.match((await inviteDownload).suggestedFilename(),/^webrtc-pad-invite-/);
+  await upload(host,'#hostReplyFile','wrong-invite.txt',invite);
+  await host.waitForFunction(()=>!document.querySelector('#hostPairError').hidden);
+  assert.match(await host.locator('#hostPairErrorText').textContent(),/your invite file/);
+  const automaticReply=guest.waitForEvent('download');await guest.evaluate(text=>{
+    const transfer=new DataTransfer();transfer.items.add(new File([text],'invite.txt',{type:'text/plain'}));
+    document.querySelector('#clientStage').dispatchEvent(new DragEvent('drop',{bubbles:true,cancelable:true,dataTransfer:transfer}));
+  },'\uFEFF'+invite);
+  assert.match((await automaticReply).suggestedFilename(),/^webrtc-pad-reply-/);
+  await guest.waitForFunction(()=>!document.querySelector('#downloadReply').disabled);
+  const reply=await guest.locator('#clientReply').inputValue();
+  assert.equal(await guest.locator('#clientReplyAction').isVisible(),true);
+  assert.equal(await guest.locator('#clientStageTitle').textContent(),'Send your reply to the host');
+  await guest.setViewportSize({width:390,height:844});
+  assert.equal(await guest.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
+  const replyDownload=guest.waitForEvent('download');await guest.locator('#clientReplyAction').click();
+  assert.match((await replyDownload).suggestedFilename(),/^webrtc-pad-reply-/);
+  assert.match(await guest.locator('#clientStageNote').textContent(),/host opens it/i);
+  await fs.mkdir('.local/screenshots',{recursive:true});
+  await guest.screenshot({path:'.local/screenshots/pairing-reply-mobile.png',fullPage:true});
+  await guest.setViewportSize({width:1280,height:950});
+  await upload(guest,'#clientInvitationFile','invite-again.txt',invite);
+  await guest.waitForFunction(()=>document.querySelector('#toast').textContent.includes('already ready'));
+  assert.equal(await guest.locator('#clientReply').inputValue(),reply);
+  await upload(host,'#hostReplyFile','reply.txt',reply);
+  await guest.waitForFunction(()=>document.querySelector('#clientEnablePad').dataset.ready==='true');
+  assert.equal(await host.locator('#hostPairError').isVisible(),false);
+  assert.equal(await host.locator('#downloadInvitation').isDisabled(),true);
+  assert.equal(await host.locator('#hostInviteExpiry').isVisible(),false);
+  assert.equal(await guest.locator('#clientReplyAction').isVisible(),false);
+  assert.equal(await guest.locator('#downloadReply').isDisabled(),true);
+  await upload(host,'#hostReplyFile','reply-again.txt',reply);
+  await host.waitForFunction(()=>document.querySelector('#toast').textContent.includes('already'));
+  assert.equal(await host.locator('#hostPairError').isVisible(),false);
+  await guest.locator('#controllerAdvanced').evaluate(el=>el.open=true);
+  await guest.locator('#clientCallControllers').click();await guest.locator('#joinKeyboardController').click();await guest.getByRole('button',{name:'Close controllers',exact:true}).click();
+  await guest.waitForFunction(()=>document.querySelector('#clientSlot').textContent.includes('P1'));
+  await guest.locator('#clientStage').click();await guest.keyboard.down('z');
+  let deadline=Date.now()+5000;while(!writes.some(state=>state.buttons.a) && Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,20));
+  await guest.keyboard.up('z');assert.ok(writes.some(state=>state.buttons.a));
+  for(const [name,text,pattern] of [
+    ['invalid.txt','not json',/complete contents/],
+    ['my-reply.txt',reply,/reply file/],
+    ['expired.txt',JSON.stringify({...JSON.parse(invite),expiresAt:1}),/expired/],
+    ['broken-connection.txt',JSON.stringify({...JSON.parse(invite),pairingId:'12345678-1234-1234-1234-123456789012',sdp:{type:'offer',sdp:'v=0\r\nbroken'}}),/invalid connection description/]
+  ]) {
+    await upload(guest,'#clientInvitationFile',name,text);
+    await guest.waitForFunction(()=>!document.querySelector('#clientPairError').hidden);
+    assert.match(await guest.locator('#clientPairErrorText').textContent(),pattern);
+    assert.equal(await guest.locator('#clientConnectionText').textContent(),'Connected');
+    assert.match(await guest.locator('#clientSlot').textContent(),/P1/);
+    assert.equal(await guest.locator('#clientReply').inputValue(),reply);
+  }
+  await upload(guest,'#clientInvitationFile','invite-connected.txt',invite);
+  await guest.waitForFunction(()=>document.querySelector('#toast').textContent.includes('already connected'));
+  assert.equal(await guest.locator('#clientPairError').isVisible(),false);
+  writes.length=0;await guest.locator('#clientStage').click();await guest.keyboard.down('z');
+  deadline=Date.now()+5000;while(!writes.some(state=>state.buttons.a) && Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,20));
+  await guest.keyboard.up('z');assert.ok(writes.some(state=>state.buttons.a),'Controller input must still arrive after invalid and duplicate imports');
+  console.log('PASS: automatic invite/reply downloads, save-again actions, clear filenames, BOM imports, mobile reply action, and invalid imports preserve live controller play');
+
+  await host.locator('#inviteFocus').click();await host.locator('#newInvitation').click();await host.waitForFunction(old=>document.querySelector('#hostInvitation').value!==old,invite);
+  const pending=JSON.parse(await host.locator('#hostInvitation').inputValue());
+  await host.evaluate(expiresAt=>{window.__realNow=Date.now;Date.now=()=>expiresAt+1000;},pending.expiresAt);
+  await host.waitForFunction(()=>document.querySelector('#hostPairStatus').textContent.includes('expired'));
+  assert.equal(await host.locator('#downloadInvitation').isDisabled(),true);
+  assert.equal(await host.locator('#copyInvitation').isDisabled(),true);
+  assert.equal(await host.locator('#hostNextAction').textContent(),'New invite');
+  assert.equal(await guest.locator('#clientConnectionText').textContent(),'Connected');
+  await host.evaluate(()=>{Date.now=window.__realNow;});
+  await host.keyboard.press('Escape');await host.locator('#hostNextAction').click();await host.waitForFunction(()=>!document.querySelector('#downloadInvitation').disabled);
+  assert.equal(await host.locator('#hostInviteExpiry').isVisible(),true);
+  await host.evaluate(()=>{
+    const pc=window.__pairingPeers.find(pc=>pc.remoteDescription?.type==='answer' && pc.connectionState==='connected');
+    Object.defineProperty(pc,'connectionState',{configurable:true,value:'failed'});Object.defineProperty(pc,'iceConnectionState',{configurable:true,value:'failed'});pc.dispatchEvent(new Event('connectionstatechange'));
+  });
+  await host.keyboard.press('Escape');const failure=host.locator('#peerList details').filter({hasText:'Connection details'});await failure.locator('summary').click();
+  assert.match(await failure.textContent(),/No TURN relay is configured/);assert.match(await failure.textContent(),/Other computer: \d+ direct routes/);
+  const hostReportEvent=host.waitForEvent('download');await failure.getByRole('button',{name:'Save diagnostics'}).click();const hostDownload=await hostReportEvent;
+  assert.match(hostDownload.suggestedFilename(),/^webrtc-pad-connection-host-.*\.json$/);
+  const hostReport=JSON.parse(await fs.readFile(await hostDownload.path(),'utf8'));assert.equal(hostReport.role,'host');assert.ok(hostReport.connections.some(connection=>connection.network.connection==='failed'));
+  const password=JSON.parse(invite).sdp.sdp.match(/a=ice-pwd:([^\r\n]+)/)?.[1];assert.ok(password);assert.ok(!JSON.stringify(hostReport).includes(password));
+  await guest.evaluate(()=>{
+    const pc=window.__pairingPeers.find(pc=>pc.remoteDescription?.type==='offer' && pc.connectionState==='connected');
+    Object.defineProperty(pc,'connectionState',{configurable:true,value:'failed'});Object.defineProperty(pc,'iceConnectionState',{configurable:true,value:'failed'});pc.dispatchEvent(new Event('connectionstatechange'));
+  });
+  assert.match(await guest.locator('#clientPairStatus').textContent(),/TURN configured: no/);
+  console.log('PASS: failed connections show direct/relay route diagnostics on both sides');
+  await host.locator('#hostEnd').click();await host.waitForFunction(()=>!document.querySelector('#hostCreate').hidden);
+  assert.match(await host.locator('#hostStatus').textContent(),/Session ended/);
+  assert.equal(await host.locator('#hostInvitation').inputValue(),'');
+  assert.equal(await host.locator('#downloadInvitation').isDisabled(),true);
+  assert.equal(await host.locator('#hostInviteExpiry').isVisible(),false);
+  assert.equal(await host.evaluate(()=>window.__captures),0);
+  await guest.locator(await guest.locator('#clientJoinSettings').isVisible()?'#clientJoinSettings':'#clientCallSettings').click();await guest.locator('#clientSettingsSheet-connection-tab').click();
+  const [guestDownload]=await Promise.all([guest.waitForEvent('download'),guest.locator('#clientSaveConnectionReport').click()]);
+  assert.match(guestDownload.suggestedFilename(),/^webrtc-pad-connection-guest-.*\.json$/);
+  const guestReport=JSON.parse(await fs.readFile(await guestDownload.path(),'utf8'));assert.equal(guestReport.role,'guest');assert.ok(guestReport.connections.some(connection=>connection.events.some(event=>event.connection==='failed')));
+  assert.ok(!JSON.stringify(guestReport).includes(password));
+  console.log('PASS: host and guest download credential-free diagnostic JSON, including failure history after session end');
+  assert.deepEqual(errors,[]);
+  console.log('PASS: expired invites cannot be saved/copied; fresh-invite recovery keeps existing guests connected; ending clears stale invite actions');
+} finally {await browser?.close();await app.close();}

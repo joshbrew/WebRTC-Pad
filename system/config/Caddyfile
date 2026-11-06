@@ -1,0 +1,11 @@
+# Replace this hostname with DNS pointing to your router's public IP.
+# Run: caddy run --config config/Caddyfile
+play.example.com {
+    @signaling path /fallback
+    handle @signaling {
+        reverse_proxy 127.0.0.1:8787
+    }
+    handle {
+        respond "WebRTC Pad signaling. Open the app on your own computer to join." 200
+    }
+}

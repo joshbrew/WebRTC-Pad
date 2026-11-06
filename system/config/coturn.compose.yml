@@ -1,0 +1,11 @@
+services:
+  coturn:
+    image: coturn/coturn:4.18.0-r0
+    restart: unless-stopped
+    ports:
+      - "3478:3478/udp"
+      - "3478:3478/tcp"
+      - "49160-49359:49160-49359/udp"
+    volumes:
+      - ../../.local/coturn/turnserver.conf:/etc/coturn/turnserver.conf:ro
+    command: ["-c", "/etc/coturn/turnserver.conf"]

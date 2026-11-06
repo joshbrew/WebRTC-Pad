@@ -1,0 +1,7 @@
+export function syncMediaControls(container,actions){
+  let group=container.querySelector(':scope > .participant-quick-controls');if(!actions){group?.remove();return;}
+  if(!group){group=document.createElement('div');group.className='participant-quick-controls';for(const event of ['pointerdown','pointermove','pointerup','click','dblclick','keydown','keyup','wheel'])group.addEventListener(event,e=>e.stopPropagation());container.append(group);}
+  group.setAttribute('role','group');group.setAttribute('aria-label','Microphone and camera controls');
+  group.dataset.hasMuted=String(Object.values(actions).some(action=>action?.enabled && !action.on));
+  for(const kind of ['mic','camera']){const action=actions[kind];let button=group.querySelector(`[data-quick-media=${kind}]`);if(!button){button=document.createElement('button');button.type='button';button.dataset.quickMedia=kind;button.className='participant-quick-button';button.innerHTML=`<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">${kind==='mic'?'<rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3m-4 0h8"/>':'<use href="#i-camera"/>'}<path class="quick-off" d="M3 3 21 21"/></svg>`;group.append(button);}button.hidden=!action;button.disabled=!action?.enabled;button.classList.toggle('is-off',!action?.on);button.setAttribute('aria-pressed',String(!action?.on));button.setAttribute('aria-label',action?.label || kind);button.title=action?.label || kind;button.onclick=event=>{event.preventDefault();event.stopPropagation();if(action?.enabled)action.toggle();};}
+}
