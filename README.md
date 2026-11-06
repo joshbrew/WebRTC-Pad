@@ -1,3 +1,6 @@
+<img width="624" height="168" alt="image" src="https://github.com/user-attachments/assets/81a5dc61-de2a-4079-bc6f-f54f703f0657" />
+
+
 # WebRTC Pad
 
 Recognize remote gamepads or mouse/keyboard as native gamepads or remote desktop controls through private Peer2Peer calls. Play split-screen without Netplay or Steam Remote Play, etc. A full call/streaming interface is included via WebRTC (fully encrypted, P2P), Video and audio streaming is optional. Works likes a free, minimal Parsec alternative. 
@@ -6,7 +9,7 @@ Each computer runs this local Node app and opens it in a browser. Host and guest
 
 Built for low controller and video latency using native capture tools as browsers won't cut it, still working out some kinks but it's playable.
 
-Tested on Windows with Diddy Kong Racing N64. Linux and Mac support included but untested. Note Firefox times out handshakes after 45 seconds, so Chromium-based browsers (e.g. Chrome, Brave) are recommended.
+Tested on Windows with Diddy Kong Racing N64. Linux and Mac support included but untested. Note Firefox times out handshakes after 45 seconds, so Chromium-based browsers (e.g. Chrome, Brave) are recommended. Later may get a formal release.
 
 | Host | Guest | Stream |
 | --- | --- | --- |
