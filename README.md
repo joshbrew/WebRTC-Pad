@@ -5,7 +5,7 @@
 
 Recognize remote gamepads or mouse/keyboard as native gamepads or remote desktop controls through private Peer2Peer calls. Play split-screen without Netplay or Steam Remote Play, etc. A full call/streaming interface is included via WebRTC (fully encrypted, P2P), Video and audio streaming is optional. Works likes a free, minimal Parsec alternative. 
 
-Each computer runs this local Node app and opens it in a browser. Host and guest share handshake files to establish connections, no third party socket server required. Includes optional remote hosting settings with game room and temp user id support, or self-hosting TURN servers (or use Metered's Open Relay for free).
+Each computer runs this local Node app and opens it in a browser. Host and guest share handshake files to establish connections, no relay server required. Includes optional remote hosting settings with game room and temp user id support, or self-hosting TURN servers (or use Metered's Open Relay for free).
 
 Built for low controller and video latency using native capture tools as browsers won't cut it, still working out some kinks but it's playable.
 
