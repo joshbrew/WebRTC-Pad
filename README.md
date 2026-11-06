@@ -1,6 +1,16 @@
 # WebRTC Pad
 
-Remote friends use their own controllers to play a game on your computer. Each computer runs this local Node app and opens it in a browser. Video is optional: use the built-in stream or a separate Discord call.
+Recognize remote gamepads or mouse/keyboard as native gamepads or remote desktop controls through private Peer2Peer calls. Play split-screen without Netplay or Steam Remote Play, etc. A full call/streaming interface is included via WebRTC (fully encrypted, P2P), Video and audio streaming is optional. Works likes a free, minimal Parsec alternative. 
+
+Each computer runs this local Node app and opens it in a browser. Host and guest share handshake files to establish connections, no third party socket server required. Includes optional remote hosting settings with game room and temp user id support, or self-hosting TURN servers (or use Metered's Open Relay for free).
+
+Built for low controller and video latency using native capture tools as browsers won't cut it, still working out some kinks but it's playable.
+
+Tested on Windows with Diddy Kong Racing N64. Linux and Mac support included but untested. Note Firefox times out handshakes after 45 seconds, so Chromium-based browsers (e.g. Chrome, Brave) are recommended.
+
+| Host | Guest | Stream |
+| --- | --- | --- |
+| <img width="800" alt="image" src="https://github.com/user-attachments/assets/83f5c0a3-c9c9-4ba5-927a-16c672c8f855" /> | <img width="800" alt="image" src="https://github.com/user-attachments/assets/01333fee-4bbe-4015-b3e6-49a29cd94350" /> | <img width="800" alt="image" src="https://github.com/user-attachments/assets/77c4efd3-d61b-4a06-9e83-e2c4b324c1d5" /> |
 
 ## Start here
 
@@ -137,11 +147,11 @@ Windows hosting is the most tested path. Guests on Windows, Linux and macOS use 
 | Host feature | Windows | Linux | macOS |
 | --- | --- | --- | --- |
 | Virtual controllers | Tested XInput/HID backends | Implemented; requires `/dev/uinput` access; real-device testing pending | Experimental HID backend; signing/device testing pending |
-| Native capture | Implemented and locally tested | Requires X11; hardware validation pending | ScreenCaptureKit + VideoToolbox on macOS 13+; experimental |
+| Native capture | Implemented and tested | Requires X11; hardware validation pending | ScreenCaptureKit + VideoToolbox on macOS 13+; experimental |
 | Window-only mouse access | Enforced for the selected window | X11 identity/occlusion enforcement | Public Accessibility window checks; experimental |
-| Whole-screen mouse/typing | Implemented and locally tested | X11; Wayland portal approval when detected, compositor validation pending | Accessibility permission required; hardware validation pending |
+| Whole-screen mouse/typing | Implemented and tested | X11; Wayland portal approval when detected, compositor validation pending | Accessibility permission required; hardware validation pending |
 | Desktop cursor overlay | Available | X11 click-through shaped windows | Click-through AppKit panels; experimental |
-| Native guest device isolation | SDL3 + HidHide/Interception; physical suppression testing pending | evdev exclusive grabs; device permissions required; physical testing pending | Per-device HID seize; OS may refuse; experimental, physical testing pending |
+| Native guest device isolation | SDL3 + HidHide/Interception; physical suppression tested | evdev exclusive grabs; device permissions required; physical testing pending | Per-device HID seize; OS may refuse; experimental, physical testing pending |
 | Native app/system audio | Available when helper/Windows version supports it | PulseAudio/pipewire-pulse playback monitors; app selection on X11, system audio on Wayland | ScreenCaptureKit app/system playback on macOS 13+; experimental |
 
 The shared browser interface includes guided setup, optional video, host preview controls, player join/removal, saved button mappings, latency/quality controls, fullscreen and picture-in-picture where the browser supports it. These workflows are tested with Windows, Linux and macOS configurations; CI runs on all three operating systems. Chrome/Chromium is recommended for the same gamepad, capture and pop-out behavior across platforms. OS-native features retain the limits listed above.
