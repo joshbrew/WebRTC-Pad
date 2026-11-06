@@ -3,17 +3,23 @@
 
 # WebRTC Pad
 
-Recognize remote gamepads or mouse/keyboard as native gamepads or remote desktop controls through private Peer2Peer calls. Play split-screen without Netplay or Steam Remote Play, etc. A full call/streaming interface is included via WebRTC (fully encrypted, P2P), Video and audio streaming is optional. Works likes a free, minimal Parsec alternative. 
+### Play offline split screen games remotely with secure P2P
+
+Recognize remote guest gamepads or mouse/keyboard as native gamepads like they're plugged into the host's computer (or as remote desktop controls) through private Peer2Peer calls. Play split-screen without Netplay or Steam Remote Play, etc. A full controller mapping and call/streaming interface is included. Video, audio, mic, or camera streaming is included optionally (or use Discord, etc.). WebRTC Pad works likes a free, minimal Parsec alternative. 
 
 Each computer runs this local Node app and opens it in a browser. Host and guest share handshake files to establish connections, no relay server required. Includes optional remote hosting settings with game room and temp user id support, or self-hosting TURN servers (or use Metered's Open Relay for free).
 
 Built for low controller and video latency using native capture tools as browsers won't cut it, still working out some kinks but it's playable.
 
-Tested on Windows with Diddy Kong Racing N64. Linux and Mac support included but untested. Note Firefox times out handshakes after 45 seconds, so Chromium-based browsers (e.g. Chrome, Brave) are recommended. Later may get a formal release.
+Tested on Windows with Diddy Kong Racing N64. Linux and Mac support included but untested. 
+
+Feel free to submit issues or make pull requests, we'll clean this up over time.
 
 | Host | Guest | Stream |
 | --- | --- | --- |
 | <img width="800" alt="image" src="https://github.com/user-attachments/assets/83f5c0a3-c9c9-4ba5-927a-16c672c8f855" /> | <img width="800" alt="image" src="https://github.com/user-attachments/assets/01333fee-4bbe-4015-b3e6-49a29cd94350" /> | <img width="800" alt="image" src="https://github.com/user-attachments/assets/77c4efd3-d61b-4a06-9e83-e2c4b324c1d5" /> |
+
+Note Firefox times out handshakes after 45 seconds, so Chromium-based browsers (e.g. Chrome, Brave) are recommended. Later may get a formal release. On Windows, don't install Interception unless you intend to use it for remote desktop as it will block keyboards when unplugged and plugged back in (known bug with Windows)
 
 ## Start here
 
