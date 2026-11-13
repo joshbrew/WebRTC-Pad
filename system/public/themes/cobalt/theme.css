@@ -1,0 +1,116 @@
+:root[data-skin="cobalt"] {
+  --stage:#060914;
+  --surface-page:#0b1120;
+  --surface-card:#141e33;
+  --surface-raised:#202d47;
+  --surface-hover:#2a3c59;
+  --line:#2a3954;
+  --line-strong:#596f96;
+  --ink:#f1f6ff;
+  --ink-2:#c0cce1;
+  --ink-3:#9daec9;
+  --accent:#a5c9ff;
+  --accent-hover:#c8dfff;
+  --accent-edge:#5d8fdb;
+  --on-accent:#102543;
+  --accent-text:#a5c9ff;
+  --accent-soft:#243857;
+  --accent-soft-ink:var(--accent-text);
+  --focus:var(--accent);
+  --accent-line:#415e8b;
+  --overlay:#101a2de8;
+
+  --accent-finish:linear-gradient(180deg,#ffffff52,transparent 60%);
+  --surface-tool-accent:#b0c9ef;
+  --surface-tool-accent-hover:#d2e3fc;
+  --surface-tool-accent-edge:#5877a5;
+  --font-display:"Instrument Sans",Inter,system-ui,sans-serif;
+  --radius-card:22px;
+  --radius-button:12px;
+  --page-finish:radial-gradient(ellipse at 48% -12%,#5d80be72,transparent 62%),linear-gradient(168deg,#142643,#080d19 62%);
+  --panel-finish:linear-gradient(167deg,#c5dbff24,transparent 43%);
+}
+
+:root[data-skin="cobalt"] .floating-screens-controls { padding:6px 9px; border-radius:var(--radius-pill); box-shadow:var(--shadow-pop); }
+:root[data-skin="cobalt"] .view-popout :is(button,.floating-screens-controls select) { background-image:var(--accent-finish); }
+
+/* The lounge puts navigation above the room and spreads call controls across a deck. */
+:root[data-skin="cobalt"] .call-shell .app-header {
+  grid-template-columns:minmax(0,1fr) auto;
+  grid-template-rows:auto auto;
+  height:auto;
+  padding-block:12px 8px;
+  row-gap:8px;
+}
+:root[data-skin="cobalt"] .call-shell .app-header > .header-right { grid-column:2; }
+:root[data-skin="cobalt"] .call-shell .app-header > .mode-switch {
+  grid-column:1 / -1;
+  grid-row:2;
+  width:min(100%,520px);
+  border:1px solid var(--line-strong);
+  background:linear-gradient(#bfd8ff26,transparent),var(--surface-card);
+}
+:root[data-skin="cobalt"] .call-shell .app-header .mode-switch::before { background-image:linear-gradient(#f1f7ffb8,transparent); }
+:root[data-skin="cobalt"] .call-shell .app-header .mode-switch button { min-height:34px; }
+:root[data-skin="cobalt"] .call-shell .brand-mark { background-image:linear-gradient(#f2f8ffc9,transparent); box-shadow:0 2px 14px #70aaff58; }
+:root[data-skin="cobalt"] .call-shell #hostSetupCard {
+  display:flex;
+  flex-direction:column;
+  padding:clamp(12px,2vw,22px);
+  border-color:var(--line-strong);
+  box-shadow:inset 0 1px #c5dbff30,0 18px 60px #0005;
+}
+:root[data-skin="cobalt"] .call-shell #hostSetupCard > * { width:100%; }
+:root[data-skin="cobalt"] .call-shell #hostSetupCard > .host-setup-header {
+  display:flex;
+  flex-wrap:wrap;
+  justify-content:space-between;
+  padding:8px 0 12px;
+  border-bottom:1px solid var(--line-strong);
+}
+:root[data-skin="cobalt"] .call-shell #hostSetupCard > #hostMediaPermissions { margin-top:4px; }
+:root[data-skin="cobalt"] .call-shell #hostSetupCard > #hostSourceSetup {
+  margin-top:14px;
+  padding:clamp(10px,2vw,20px);
+  background:linear-gradient(158deg,#b5ceff13,transparent 52%),var(--surface-page);
+}
+:root[data-skin="cobalt"] .call-shell .call-toolbar:not(:fullscreen .call-toolbar) {
+  width:min(1120px,calc(100vw - 24px));
+  max-width:none;
+  border:1px solid var(--line-strong);
+  border-radius:14px;
+  background:linear-gradient(#c8dcff33,transparent 65%),var(--surface-card);
+  box-shadow:0 6px 25px #0009,inset 0 1px #e7f3ff40;
+}
+:root[data-skin="cobalt"] .call-shell :is(#hostToolbar,#clientToolbar):not(:fullscreen .call-toolbar) .toolbar-actions { justify-content:center; }
+:root[data-skin="cobalt"] .call-shell .call-toolbar .button { border-radius:10px; }
+:root[data-skin="cobalt"] .call-shell .video-stage:not(:fullscreen) { border-color:var(--line-strong); box-shadow:0 12px 38px #05091488; }
+
+@media (min-width:901px) {
+  :root[data-skin="cobalt"] .call-shell #hostToolbar:not(:fullscreen .call-toolbar) .toolbar-actions { justify-content:flex-start; }
+  :root[data-skin="cobalt"] .call-shell #hostToolbar:not(:fullscreen .call-toolbar) .host-end-actions { margin-inline-start:auto; }
+  :root[data-skin="cobalt"] body.call-shell:has(.call-sheet[open]:not(.chat-sheet,.prejoin-sheet,.device-quick-sheet)) main { padding-right:0; }
+  :root[data-skin="cobalt"] .call-shell .sectioned-settings[open]:not(.device-quick-sheet,.prejoin-sheet) {
+    left:50%;
+    right:auto;
+    translate:-50% 0;
+    width:min(640px,calc(100vw - 32px));
+    max-height:680px;
+    border-radius:22px;
+  }
+  :root[data-skin="cobalt"] .call-shell .sectioned-settings .settings-tabs { justify-content:center; }
+  :root[data-skin="cobalt"] .call-shell .sectioned-settings .settings-tabs [role=tab] { flex:0 1 125px; flex-direction:row; }
+  :root[data-skin="cobalt"] .call-shell #hostSetupCard { display:grid;grid-template-columns:minmax(0,1fr) minmax(0,2fr);gap:8px 18px; }
+  :root[data-skin="cobalt"] .call-shell #hostSetupCard > * { grid-column:2; }
+  :root[data-skin="cobalt"] .call-shell #hostSetupCard > .host-setup-header {
+    grid-column:1;
+    grid-row:1 / span 12;
+    align-self:start;
+    flex-direction:column;
+    align-items:stretch;
+    gap:12px;
+    padding:12px 0;
+  }
+  :root[data-skin="cobalt"] .call-shell #hostSetupCard > .host-setup-header h3 { font-size:22px; }
+  :root[data-skin="cobalt"] .call-shell #hostSetupCard > #hostSourceSetup { grid-row:auto;margin-top:0; }
+}

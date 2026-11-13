@@ -8,7 +8,7 @@ test('stream floors keep spatial changes in the app and unsupported tuning hints
   const calls=[],peer={quality:{width:1280,height:720,minHeight:480,maxBitrate:5000000,frameRate:60},senders:{video:{track:{getSettings:()=>({width:1920,height:1080})},getParameters:()=>({encodings:[{}]}),async setParameters(params){calls.push(structuredClone(params));if(calls.length===1)throw new Error('Unsupported priority hint');}}}};
   await applySenderQuality(peer);
   assert.equal(calls[0].degradationPreference,'maintain-resolution');
-  assert.equal(calls[1].degradationPreference,undefined);
+  assert.equal(calls[1].degradationPreference,'maintain-resolution');
   assert.deepEqual(calls[1].encodings,[{maxBitrate:5000000,maxFramerate:60,scaleResolutionDownBy:1.5}]);
 });
 

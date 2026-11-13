@@ -53,7 +53,10 @@ try{
     assert.equal(await guests[1].locator('#clientVideo').evaluate(v=>v.videoHeight),720);
   }
   await guest.evaluate(()=>{document.querySelector('#clientResolution').value='480';for(const resolution of ['360','720','480'])window.qualityChannel.send(JSON.stringify({type:'quality-request',quality:{resolution,frameRate:0,automatic:false}}));});
-  await guest.waitForFunction(()=>document.querySelector('#clientVideo').videoHeight>=478 && document.querySelector('#clientVideo').videoHeight<=480);
+  await guest.waitForFunction(()=>document.querySelector('#clientVideo').videoHeight>=478 && document.querySelector('#clientVideo').videoHeight<=480).catch(async error=>{
+    console.error('Rapid request did not settle',await host.locator('#hostStatus').textContent(),await guest.locator('#clientHostLimit').textContent(),[...engines[0].transports].map(([id,p])=>[id,p.key,p.confirmed,p.previous?.key]));
+    throw error;
+  });
   await guest.locator('#clientResolution').evaluate(el=>{el.value='720';el.dispatchEvent(new Event('change',{bubbles:true}));});await guest.waitForFunction(()=>document.querySelector('#clientVideo').videoHeight===720);
   let audit=await guest.evaluate(()=>window.handoverAudit);assert.equal(audit.empty,0);assert.equal(audit.black,0);
   const engine=engines[0];await host.waitForTimeout(200);assert.equal(engine.profiles.size,stableProfiles,'Retire replaced profiles once the new frame is presented');assert.equal(engine.transports.size,3,'One preview and two guest transports remain');
@@ -92,7 +95,7 @@ try{
   assert.equal(await guest.locator('#clientVideo').evaluate(v=>v.videoHeight),720,'Automatic quality must respect the guest floor');
   assert.deepEqual([...engine.transports.values()],beforeFloor,'Pressure at the floor does not restart the stream');
   audit=await guest.evaluate(()=>{const a=window.handoverAudit;window.handoverAudit=null;return a;});
-  assert.equal(audit.empty,0);assert.equal(audit.black,0);assert.ok(audit.max<1000,'Local handovers must not produce multi-second stalls');
+  assert.equal(audit.empty,0);assert.equal(audit.black,0);assert.ok(audit.max<1000,`Local handovers must not produce multi-second stalls (observed ${Math.round(audit.max)} ms)`);
   assert.equal(await guest.evaluate(()=>window.playerWrites.some(w=>!w.tracks?.length)),false,'Quality changes never detach the live video player');
   console.log('PASS: a replacement with no frames rolls back without stopping the live picture or call; later changes succeed; fixed resolution and automatic floors withstand pressure.');
   console.log('PASS: policy-only changes keep transports; quality handovers and rapid requests keep the picture; second guest and profile cleanup remain stable.',audit);

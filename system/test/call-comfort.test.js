@@ -20,11 +20,14 @@ test('setup checks respect controller-only sessions and never imply uncaptured s
   assert.equal(rows[0].value,'Checked when room starts');assert.equal(rows[1].level,'optional');assert.equal(rows[2].level,'optional');
   const failed=readiness({side:'host',driver:false,picture:true,audio:false});assert.equal(failed[0].fix,'driverStatus');assert.equal(failed[2].value,'No audio captured');
   assert.equal(readiness({side:'client',count:3,connected:true,picture:true})[1].value,'3 detected');
-  assert.equal(guestCaption({state:'connected',count:3}),'3 controllers playing');assert.equal(guestCaption({state:'connected',count:1,enabled:false}),'1 controller paused');assert.equal(guestCaption({state:'connected',count:0,wantsController:false}),'Watching');
+  assert.equal(guestCaption({state:'connected',count:3}),'3 controllers joined');assert.equal(guestCaption({state:'connected',count:1,enabled:false}),'1 controller paused');assert.equal(guestCaption({state:'connected',count:0,wantsController:false}),'Watching');
   assert.equal(guestCaption({state:'connected',detected:1}),'1 controller detected · not joined');
   assert.equal(guestCaption({state:'connected',detected:3}),'3 controllers detected · not joined');
   assert.equal(guestCaption({state:'connected',detected:3,enabled:false}),'Controller sharing paused');
   assert.equal(guestCaption({state:'connected',detected:1,setupRequired:true}),'Guest controller setup needed');
+  assert.equal(guestCaption({state:'connected',detected:1,needsMapping:1}),'Controller needs mapping');
+  assert.equal(guestCaption({state:'connected',count:2,detected:3,needsMapping:1}),'2 controllers joined · 1 to map');
+  assert.equal(guestCaption({state:'connected',detected:1,pending:true}),'Controller joining…');
 });
 test('guest view accepts only small JPEG data and bounded numeric measurements',()=>{
   const clean=cleanGuestView({image:'javascript:alert(1)',metrics:{width:Infinity,height:-100,fps:'secret',bufferMs:1e9},audio:{loss:100,receiving:1,muted:true},password:'secret'});

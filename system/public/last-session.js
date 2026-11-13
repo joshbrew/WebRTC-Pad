@@ -10,7 +10,7 @@ export function sessionPage(url,saved='host'){
   if(mode==='host')return 'host';
   return saved==='client'?'client':'host';
 }
-const choices={captureBackend:['native','browser'],streamResolution:['native','720','1080','1440','2160'],streamMinimumResolution:['360','480','720','1080','1440','2160'],streamFramerate:['15','30','60','120'],streamPriority:['motion','resolution','balanced'],streamCodec:['h264','h265'],streamEncoderPreset:['','p1','p2','p4'],hostControllerOutput:['auto','x360','ds4','native']};
+const choices={captureBackend:['native','browser'],streamResolution:['native','480','720','1080','1440','2160'],streamSecondaryResolution:['main','360','480','720','1080','1440','2160'],streamMinimumResolution:['360','480','720','1080','1440','2160'],streamFramerate:['15','30','60','120'],streamPriority:['motion','resolution','balanced'],streamCodec:['h264','h265'],streamEncoderPreset:['','p1','p2','p4'],hostControllerOutput:['auto','x360','ds4','native']};
 const toggles=['nativeCaptureAudio','hostAudioOnly','hostAutoThrottle','hostAllowGuestVideo','hostAllowGuestMic','hostAllowGuestScreens','hostAllowFiles','hostAllowClipboard','hostDynamicControllers'];
 export const lastSessionFields=[...Object.keys(choices),...toggles];
 const size=value=>[value?.width,value?.height].every(n=>Number.isSafeInteger(n)&&n>1&&n<=32768)?{width:value.width,height:value.height}:null;

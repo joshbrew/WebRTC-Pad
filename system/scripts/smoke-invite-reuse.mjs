@@ -75,10 +75,10 @@ try{
   assert.equal(room().peers.size,2);assert.equal(await two.locator('#clientEnablePad').getAttribute('data-can-play'),'false','New invite uses the new access setting');
   await one.evaluate(()=>window.pads[0].buttons[0]={pressed:true,value:1});
   await one.waitForFunction(()=>document.querySelector('#clientEnablePad').dataset.joined==='1');
-  await one.locator('#clientControlsFocus').click();await one.getByRole('button',{name:'Select Pro Controller',exact:true}).click();
+  await one.locator('#clientControlsFocus').click();await one.getByRole('button',{name:'Join Pro Controller',exact:true}).click();
   await one.waitForFunction(()=>document.querySelector('#clientEnablePad').dataset.joined==='2');
   await one.getByRole('button',{name:'Stop using PS4 Controller',exact:true}).click();await one.waitForFunction(()=>document.querySelector('#clientEnablePad').dataset.joined==='1');
-  await one.getByRole('button',{name:'Select PS4 Controller',exact:true}).click();await one.waitForFunction(()=>document.querySelector('#clientEnablePad').dataset.joined==='2');
+  await one.getByRole('button',{name:'Join PS4 Controller',exact:true}).click();await one.waitForFunction(()=>document.querySelector('#clientEnablePad').dataset.joined==='2');
   await one.screenshot({path:'.local/screenshots/guest-simple-controller-cards.png'});
   await host.locator('#hostInviteSheet').evaluate(el=>el.open=false);await host.screenshot({path:'.local/screenshots/host-controller-only-call.png'});
   // A used invite must not create another connection through an export action.

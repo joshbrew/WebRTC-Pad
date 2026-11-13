@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "id": "signal",
+  "name": "Signal",
+  "colorScheme": "dark",
+  "stylesheet": "theme.css",
+  "preview": "preview.webp",
+  "description": "Broadcast console with a left command rail and stacked setup.",
+  "order": 20
+}

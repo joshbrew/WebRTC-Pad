@@ -50,8 +50,9 @@ try {
   await host.setViewportSize({ width: 1440, height: 1000 }); await host.locator('#modeHost').click();
   await host.locator('#hostPlayerOptions').evaluate(el=>el.open=true);await host.locator('#hostDynamicControllers').uncheck();await host.locator('#hostCreate').click(); await host.waitForFunction(() => !document.querySelector('#createInvitation').disabled);
   assert.equal(await host.locator('#hostCallSettings').isVisible(), true);
+  if(!await host.locator('#hostInviteSheet').evaluate(sheet=>sheet.open))await host.locator('#inviteFocus').click();
   await host.locator('#createInvitation').click(); await host.waitForFunction(() => !!document.querySelector('#hostInvitation').value, null, { timeout: 45000 });
-  assert.equal(await host.locator('#downloadInvitation').isVisible(), true);
+  assert.match(await host.locator('#createInvitation').textContent(),/Download invite file/);
   const invitation = await host.locator('#hostInvitation').inputValue();
   const player = await context.newPage(); player.on('pageerror', e => errors.push(e.message));
   await player.addInitScript(() => {localStorage.setItem('webrtc-pad:block-local-controller-input:v2','false');
@@ -69,7 +70,7 @@ try {
   await player.waitForFunction(() => !document.querySelector('#clientEnablePad').disabled);
   assert.equal(await player.locator('#clientPairing').getAttribute('open'), null);
   assert.equal(await player.locator('#clientEnablePad').isEnabled(), true);
-  await host.locator('#hostCallSettings').click();await host.locator('#hostSettingsSheet-screen-tab').click();await host.locator('#chooseBrowserSource').click();await host.keyboard.press('Escape');
+  await host.locator('#hostCapture').click();await host.keyboard.press('Escape');
   try { await player.waitForFunction(() => document.querySelector('#clientVideo').videoWidth > 0, null, { timeout: 10000 }); }
   catch (error) { console.log(await host.evaluate(() => ({ status: document.querySelector('#hostStatus').textContent, quality: document.querySelector('#hostStreamInfo').textContent, errors: window.__pcs.map(pc => pc.connectionState) }))); throw error; }
   assert.equal(await player.locator('#clientEmpty').isVisible(), false);
@@ -79,13 +80,15 @@ try {
   await player.waitForFunction(() => !document.fullscreenElement);
   await player.locator('#clientCallSettings').click();
   assert.equal(await player.locator('#clientPopout').isEnabled(), true);
-  await player.locator('#clientPopout').click();
-  await player.waitForFunction(() => document.pictureInPictureElement?.id === 'clientVideo');
+  const openingPopout=player.waitForEvent('popup');await player.locator('#clientPopout').click();const popout=await openingPopout;
+  await popout.waitForFunction(()=>document.querySelector('.floating-screens-grid video')?.videoWidth>0);
   assert.equal(await player.locator('#clientPopout').getAttribute('aria-pressed'), 'true');
-  await player.keyboard.press('Escape');await player.locator('#clientCallControllers').click();await player.evaluate(()=>{const el=document.querySelector('#backgroundGamepad');el.checked=false;el.dispatchEvent(new Event('change'));});
-  const pipWorkerReady = player.waitForEvent('worker', { predicate: worker => worker.url().endsWith('/input-clock.js'), timeout: 5000 });
-  await player.locator('#clientEnablePad').click();
-  await pipWorkerReady;
+  await player.keyboard.press('Escape');await player.evaluate(()=>{const el=document.querySelector('#backgroundGamepad');el.checked=false;el.dispatchEvent(new Event('change'));});
+  if(!player.workers().some(worker=>worker.url().endsWith('/input-clock.js'))){
+    const workerReady=player.waitForEvent('worker',{predicate:worker=>worker.url().endsWith('/input-clock.js'),timeout:5000});
+    await player.evaluate(()=>{const button=document.querySelector('#clientEnablePad');if(button.getAttribute('aria-pressed')!=='true')button.click();});
+    await workerReady;
+  }
   assert.ok(player.workers().some(worker => worker.url().endsWith('/input-clock.js')), 'Enabling controls must start its input clock worker');
   await player.evaluate(() => {
     Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
@@ -94,19 +97,19 @@ try {
     document.querySelector('#clientVideo').pause();
     window.__pad.buttons[0] = { pressed: true, value: 1 };
   });
+  await popout.bringToFront();await popout.evaluate(()=>window.dispatchEvent(new Event('focus')));
   const waitState = async (predicate, message) => {
     const deadline = Date.now() + 5000;
     while (!predicate(lastStates.get('p1')) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 30));
     assert.ok(predicate(lastStates.get('p1')), message);
   };
-  await waitState(state => state?.buttons.a, 'Gamepad input must cross WebRTC while PiP is open and page is unfocused');
-  await player.evaluate(() => document.exitPictureInPicture());
-  await player.waitForFunction(() => !document.pictureInPictureElement);
-  await waitState(state => state && !state.buttons.a, 'Closing PiP while unfocused must release controller input');
+  await waitState(state => state?.buttons.a, 'Gamepad input must cross WebRTC while the pop-out is focused');
+  await popout.close();
+  await player.waitForFunction(() => document.querySelector('#clientPopout').getAttribute('aria-pressed')==='false');
+  await waitState(state => state && !state.buttons.a, 'Closing the pop-out while unfocused must release controller input');
   await player.evaluate(() => { delete document.hidden; delete document.hasFocus; window.__pauseInputTimers = false; window.__pad.buttons[0] = { pressed: false, value: 0 }; return document.querySelector('#clientVideo').play(); });
-  await player.locator('#clientEnablePad').click();
   assert.equal(await player.locator('#clientPopout').getAttribute('aria-pressed'), 'false');
-  console.log('PASS: real video PiP entry/exit; worker clock drives gamepad snapshots over WebRTC with page timers paused and the document unfocused; controls release on exit');
+  console.log('PASS: pop-out entry/exit; worker clock drives gamepad snapshots over WebRTC while the pop-out has focus; controls release on exit');
   if(!await host.locator('#hostSettingsSheet').evaluate(el=>el.open))await host.locator('#hostCallSettings').click();await host.locator('#hostSettingsSheet-screen-tab').click();await host.locator('#hostSettings').evaluate(el=>el.open=true);
   await host.locator('#streamResolution').selectOption('720'); await host.locator('#streamFramerate').selectOption('15');
   await host.waitForFunction(() => document.querySelector('#streamQualityLabel').textContent === '720p · 15 fps');
@@ -114,7 +117,6 @@ try {
   const tuning = await host.evaluate(() => window.__pcs.at(-1).getSenders().find(s => s.track?.kind === 'video').getParameters().encodings[0]);
   assert.equal(tuning.maxFramerate, 15); assert.ok(tuning.maxBitrate > 0); assert.ok(tuning.scaleResolutionDownBy >= 1);
   console.log('PASS: real fullscreen entry/exit and live encoder resolution/frame-rate changes');
-  await player.locator('#clientEnablePad').click();
   assert.equal(await player.locator('#clientEnablePad').getAttribute('aria-pressed'), 'true');
   await player.screenshot({ path: '.local/screenshots/ui-player-connected.png', fullPage: true });
   assert.deepEqual(errors, []);

@@ -1,6 +1,6 @@
 // Deliberately exclude desktop permissions, device grabs, credentials and mic/
 // camera activation. Applying a preset never starts capture or joins a call.
-export const presetFields=['captureBackend','nativeCaptureAudio','hostAudioOnly','streamResolution','streamMinimumResolution','streamFramerate','streamPriority','hostAutoThrottle','streamCodec','streamEncoderPreset'];
+export const presetFields=['captureBackend','nativeCaptureAudio','hostAudioOnly','streamResolution','streamSecondaryResolution','streamMinimumResolution','streamFramerate','streamPriority','hostAutoThrottle','streamCodec','streamEncoderPreset'];
 export function cleanPreset(value){
   if(value?.version!==1 || !value.fields || typeof value.fields!=='object')throw Error('Invalid session preset');
   const fields={};for(const id of presetFields)if(typeof value.fields[id]==='string' && value.fields[id].length<64 || typeof value.fields[id]==='boolean')fields[id]=value.fields[id];

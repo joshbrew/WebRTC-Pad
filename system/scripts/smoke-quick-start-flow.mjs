@@ -43,9 +43,9 @@ try {
   await guest.setViewportSize({width:1280,height:950});
   await host.locator('#hostReplyFile').setInputFiles({name:'reply.txt',mimeType:'text/plain',buffer:Buffer.from(await guest.locator('#clientReply').inputValue())});
   await target(guest,'#connectedControllers');await guest.bringToFront();
-  await guest.locator('#controllerAdvanced').evaluate(el=>el.open=true);await guest.locator('#clientEnablePad').click();await target(guest,'#clientEnablePad');
-  assert.match(await guest.locator('#tourTitle').textContent(),/Resume/);
-  await guest.locator('#controllerAdvanced').evaluate(el=>el.open=true);await guest.locator('#clientEnablePad').click();await target(guest,'#connectedControllers');
+  await guest.locator('#clientJoinControllers').uncheck();await target(guest,'#clientJoinControllers');
+  assert.match(await guest.locator('#tourTitle').textContent(),/Turn on your controllers/);
+  await guest.locator('#clientJoinControllers').check();await target(guest,'#connectedControllers');
   await guest.evaluate(()=>{window.__pad.buttons[0]={pressed:true,value:1};});
   await target(guest,'#clientMediaToggle');await guest.evaluate(()=>{window.__pad.buttons[0]={pressed:false,value:0};});
   await guest.waitForFunction(()=>document.querySelector('#clientVideo').getVideoPlaybackQuality().totalVideoFrames>8);
@@ -65,6 +65,12 @@ try {
   await target(watcher,'#clientMediaToggle');assert.match(await watcher.locator('#tourBody').textContent(),/watch or listen/);
   await watcher.locator('#tourNext').click();await target(watcher,'#clientFullscreen');
   assert.equal(await watcher.locator('#clientSlot').textContent(),'Watching');
+  await watcher.setViewportSize({width:390,height:844});
+  await target(watcher,'#clientViewFullscreen');
+  assert.equal(await watcher.locator('#clientViewFullscreen').isVisible(),true);
+  assert.equal(await watcher.locator('#clientSettingsSheet').evaluate(el=>el.open),false,'The phone guide points directly to the view control');
+  await watcher.setViewportSize({width:1280,height:950});
+  await target(watcher,'#clientFullscreen');
   console.log('PASS: watching-only invites get viewing instructions instead of controller-join actions');
   assert.deepEqual(errors,[]);
 } finally {await browser?.close();await app.close();}

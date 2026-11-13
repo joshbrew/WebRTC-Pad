@@ -18,8 +18,8 @@ test('setup storage is optional and round-trips without named profiles',()=>{
   storeLastSession({version:1,fields:{nativeCaptureAudio:true},source:{kind:'desktop',label:'Main screen'}},storage);
   assert.equal(loadLastSession(storage).fields.nativeCaptureAudio,true);
   assert.equal(loadLastSession({getItem(){throw Error('blocked');}}),null);assert.doesNotThrow(()=>storeLastSession({version:1,fields:{}},{setItem(){throw Error('blocked');}}));
-  storeLastSession({version:1,fields:{streamMinimumResolution:'720',hostAutoThrottle:false}},storage);
-  assert.deepEqual(loadLastSession(storage).fields,{streamMinimumResolution:'720',hostAutoThrottle:false});
+  storeLastSession({version:1,fields:{streamMinimumResolution:'720',streamSecondaryResolution:'480',hostAutoThrottle:false}},storage);
+  assert.deepEqual(loadLastSession(storage).fields,{streamMinimumResolution:'720',streamSecondaryResolution:'480',hostAutoThrottle:false});
 });
 test('the last page is remembered unless a host/join shortcut or invitation explicitly chooses a page',()=>{
   assert.equal(sessionPage('/?ui=call','client'),'client');assert.equal(sessionPage('/','invalid'),'host');

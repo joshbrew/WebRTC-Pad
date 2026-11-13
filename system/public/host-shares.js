@@ -1,11 +1,13 @@
 import {sourcePicker} from './source-picker.js';
+import {browserSourceLabel} from './last-session.js';
+import {screenSoundButton,syncScreenSound} from './guest-tiles.js';
 const element=(tag,text,className)=>{const node=document.createElement(tag);if(text)node.textContent=text;if(className)node.className=className;return node;};
 
 // Extra views are captured only by explicit host actions. Native encoding starts
 // lazily when a guest selects a view or opens its independent video window.
 export class HostShares {
-  constructor({root,primaryShared=()=>true,nativeAvailable,addNative,removeNative,controlNative,quality,changed,status}){
-    Object.assign(this,{primaryShared,nativeAvailable,addNative,removeNative,controlNative,quality,changed,status});this.sources=new Map();this.generation=0;
+  constructor({root,primaryShared=()=>true,nativeAvailable,addNative,removeNative,controlNative,setNativeAudio,nativeAudioAvailable,quality,changed,audioChanged,status,notify}){
+    Object.assign(this,{primaryShared,nativeAvailable,addNative,removeNative,controlNative,setNativeAudio,nativeAudioAvailable,quality,changed,audioChanged,status,notify});this.sources=new Map();this.generation=0;
     this.root=element('details',null,'advanced extra-shares');this.root.id='hostExtraShares';this.root.hidden=true;
     this.root.append(element('summary','Additional screens & windows'));
     this.root.append(element('p','Add views for guests to switch between or open in separate windows. Native windows can also accept mouse and typing when you allow it below.','small muted'));
@@ -46,13 +48,57 @@ export class HostShares {
   async chooseBrowser(){
     const generation=this.generation;this.add.disabled=true;
     try{
-      const q=this.quality(),stream=await navigator.mediaDevices.getDisplayMedia({video:{frameRate:{ideal:q.frameRate || 60,max:q.frameRate || 60}},audio:false});
+      const q=this.quality(),stream=await navigator.mediaDevices.getDisplayMedia({video:{frameRate:{ideal:q.frameRate || 60,max:q.frameRate || 60}},audio:true,systemAudio:'include',windowAudio:'window'});
       if(generation!==this.generation){stream.getTracks().forEach(track=>track.stop());return;}
       const track=stream.getVideoTracks()[0];if(!track){stream.getTracks().forEach(track=>track.stop());return;}
       track.contentHint='motion';const id=crypto.randomUUID();
-      this.sources.set(id,{id,kind:'browser',label:track.label || `Screen ${this.sources.size+2}`,stream,settings:track.getSettings()});
+      const settings=track.getSettings(),name=browserSourceLabel(track.label,settings.displaySurface);
+      const source={id,kind:'browser',label:name==='Browser share'?`Screen ${this.sources.size+2}`:name,stream,settings,appliedFrameRate:q.frameRate};
+      this.sources.set(id,source);
+      for(const audio of stream.getAudioTracks()){
+        audio.enabled=false;
+        for(const event of ['mute','unmute','ended'])audio.addEventListener(event,()=>{if(this.get(id)===source)this.publishAudio(source);});
+      }
       track.onended=()=>this.remove(id);this.picker.hidden=true;this.render();Promise.resolve(this.changed()).catch(error=>this.status(error.message));
     }catch(error){if(error.name!=='NotAllowedError')this.status(error.message);}finally{this.add.disabled=false;}
+  }
+  audioTrack(source){return source?.audioEnabled?source.stream?.getAudioTracks().find(track=>track.readyState==='live'):undefined;}
+  hasAudio(source){return source.audioEnabled===true && (source.kind==='native' || this.audioTrack(source)?.muted===false);}
+  audioControl(source){
+    return {audio:true,muted:!source.audioEnabled,soundBusy:source.audioBusy,soundMode:'share',toggleSound:()=>this.toggleAudio(source)};
+  }
+  publishAudio(source){
+    this.render();
+    Promise.resolve(this.audioChanged(source.id)).catch(error=>this.notify(error.message));
+  }
+  audioFailed(source,error){
+    if(!source?.audioEnabled || source.audioBusy)return;
+    source.audioEnabled=false;
+    this.publishAudio(source);
+    this.notify(`Sound for ${source.label} stopped. ${error}`);
+  }
+  async toggleAudio(source){
+    if(this.get(source.id)!==source || source.audioBusy)return;
+    const enabled=!source.audioEnabled;
+    if(source.kind==='browser'){
+      const tracks=source.stream.getAudioTracks().filter(track=>track.readyState==='live');
+      if(enabled && !tracks.length){this.notify('To include sound, choose this view again and turn on audio in the browser’s sharing dialog, if available.');return;}
+      for(const track of tracks)track.enabled=enabled;
+      source.audioEnabled=enabled;
+      if(enabled && source.settings?.displaySurface==='monitor')this.notify('System sound can include other apps, calls, and notifications.');
+      this.publishAudio(source);
+      return;
+    }
+    if(enabled && !this.nativeAudioAvailable(source)){
+      this.notify('Native audio is unavailable for this source. Try a browser tab or a source with audio support.');return;
+    }
+    source.audioBusy=true;this.render();
+    try{
+      const result=await this.setNativeAudio(source.id,enabled);
+      if(result.audioError){this.notify(`Could not share sound for ${source.label}. ${result.audioError}`);source.audioEnabled=false;}
+      else {source.audioEnabled=enabled;if(enabled && source.settings?.kind==='desktop')this.notify('System sound can include other apps, calls, and notifications.');}
+    }catch(error){this.notify(error.message);}
+    finally{source.audioBusy=false;if(this.get(source.id)===source)this.publishAudio(source);}
   }
   async remove(id){
     const source=this.sources.get(id);if(!source)return;
@@ -82,7 +128,9 @@ export class HostShares {
           try{const value=await this.controlNative(source.id,enabled);if(this.sources.get(source.id)!==source)return;source.policy=value.policy;this.render();await this.changed();}catch(error){this.status(error.message);control.disabled=false;}
         };row.append(control);const caution=element('p',null,'input-caution');caution.append(element('strong','CAUTION'),element('span','Allow window control lets guests click and type in this window. Typing works only while it is in front. Stop window control revokes access.'));row.append(caution);
       }
-      row.append(remove);this.list.append(row);
+      const sound=screenSoundButton(()=>this.toggleAudio(source),'button small-button share-chip-sound');
+      syncScreenSound(sound,{label:source.label,...this.audioControl(source)});
+      row.append(sound,remove);this.list.append(row);
     }
   }
 }
@@ -90,19 +138,20 @@ export class HostShares {
 export function guestViewSelector(root,selectView,popout=()=>{}){
   const group=element('div',null,'guest-view-selector');group.id='clientSharedViews';group.hidden=true;
   const label=element('label','Shared view','field-label'),select=element('select');select.id='clientSharedView';label.htmlFor=select.id;
-  const note=element('p','Window control is available only when the host allows it. In a tiled layout, select a view before using mouse or typing.','small muted');
-  const popouts=element('details');popouts.className='advanced';popouts.id='clientViewPopouts';popouts.append(element('summary','Open views in separate windows'));
-  const list=element('div',null,'view-popout-list');popouts.append(list,element('p','Each window streams independently. Pop-out windows are for viewing. Use the main call for mouse and typing.','small muted'));
-  group.append(label,select,note,popouts);root.before(group);
+  const popouts=element('details');popouts.className='advanced';popouts.id='clientViewPopouts';popouts.append(element('summary','Separate windows'));
+  const list=element('div',null,'view-popout-list');popouts.append(list);
+  group.append(label,select,popouts);root.before(group);
   select.onchange=()=>selectView(select.value);
   return {
     update(value){
       const sources=Array.isArray(value?.sources)?value.sources.slice(0,33):[];
-      select.replaceChildren(...sources.filter(s=>typeof s?.id==='string' && s.id.length<=80 && typeof s.label==='string').map(s=>new Option(s.label.slice(0,120),s.id)));
-      select.value=typeof value?.selected==='string'?value.selected:'';group.hidden=select.options.length<2;note.hidden=!select.value;
-      const valid=sources.filter(s=>typeof s?.id==='string' && s.id.length<=80 && typeof s.label==='string');popouts.hidden=!valid.length;
+      const valid=sources.filter(s=>typeof s?.id==='string' && s.id.length<=80 && typeof s.label==='string');
+      select.replaceChildren(...valid.map(s=>new Option(s.label.slice(0,120),s.id)));
+      select.value=typeof value?.selected==='string'?value.selected:'';group.hidden=select.options.length<2;
+      popouts.hidden=valid.length<2;
+      if(popouts.hidden)popouts.open=false;
       if(JSON.stringify(valid)!==list.dataset.sources){list.dataset.sources=JSON.stringify(valid);list.replaceChildren(...valid.map(source=>{const button=element('button',`Pop out ${source.label.slice(0,120)}`,'button small-button');button.dataset.sourceId=source.id;button.onclick=()=>popout(source.id);return button;}));}
     },
-    clear(){group.hidden=true;select.replaceChildren();}
+    clear(){group.hidden=true;popouts.hidden=true;popouts.open=false;select.replaceChildren();}
   };
 }

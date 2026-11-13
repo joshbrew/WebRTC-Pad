@@ -14,9 +14,10 @@ export function fullscreenToolbar(stage, toolbar, doc=document){
     else if(toolbar.parentElement===stage)home.after(toolbar);
   }
   doc.addEventListener('fullscreenchange',update);
-  stage.addEventListener('pointermove',()=>reveal());
-  stage.addEventListener('pointerdown',()=>reveal(true));
-  toolbar.addEventListener('focusin',()=>reveal(true));
+  // Tiles and panels stop events from reaching remote input handlers.
+  stage.addEventListener('pointermove',()=>{if(!doc.pointerLockElement)reveal();},true);
+  stage.addEventListener('pointerdown',()=>{if(!doc.pointerLockElement)reveal(true);},true);
+  stage.addEventListener('focusin',event=>{if(event.target!==stage)reveal(true);});
   window.addEventListener('pagehide',()=>clearTimeout(hideTimer));
   return {reveal};
 }

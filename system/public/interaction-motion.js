@@ -1,7 +1,7 @@
 // Event-driven effects only. Actions never wait for animations; no frame loop
 // or media observers run alongside gameplay.
 export function initInteractionMotion(root=document){
-  const reduced=matchMedia('(prefers-reduced-motion: reduce)'),running=new Map(),channels=new WeakMap(),switches=new Set();
+  const reduced=matchMedia('(prefers-reduced-motion: reduce)'),running=new Map(),channels=new WeakMap(),ripples=new WeakMap(),switches=new Set();
   const cancel=(group=null)=>{for(const [animation,channel] of running)if(!group || channel.startsWith(group)){animation.cancel();running.delete(animation);}};
   const available=control=>control && !reduced.matches && !document.hidden && !control.disabled && !control.matches(':disabled') && !control.closest('[inert],[aria-disabled=true],[data-no-motion]') && control.getClientRects().length && typeof control.animate==='function';
   function play(control,frames,options={},channel='press'){
@@ -12,29 +12,68 @@ export function initInteractionMotion(root=document){
     const settled=()=>{running.delete(animation);if(active.get(channel)===animation)active.delete(channel);};
     animation.onfinish=settled;animation.oncancel=settled;return animation;
   }
+  const interactive='button,a[href],summary,input,select,textarea';
+  const iconsFor=control=>[...control.querySelectorAll('svg,.appearance-chevron')].filter(icon=>{
+    const owner=icon.closest(interactive);
+    return !icon.parentElement.closest('svg') && (!owner || owner===control) && available(icon);
+  });
+  function ripple(control,origin){
+    const {left,top,width,height}=origin.getBoundingClientRect();
+    if(!width || !height)return;
+    ripples.get(control)?.cancel();
+    const ring=document.createElement('span');
+    ring.className='ui-press-ripple';
+    ring.setAttribute('aria-hidden','true');
+    const dialog=control.closest('dialog[open]');
+    const host=dialog || document.fullscreenElement || document.body;
+    const bounds=dialog?.getBoundingClientRect();
+    const size=Math.min(30,Math.max(16,width,height)+4);
+    const x=left+width/2-size/2-(dialog?bounds.left+dialog.clientLeft-dialog.scrollLeft:0);
+    const y=top+height/2-size/2-(dialog?bounds.top+dialog.clientTop-dialog.scrollTop:0);
+    Object.assign(ring.style,{
+      position:dialog?'absolute':'fixed',left:x+'px',top:y+'px',width:size+'px',height:size+'px',
+      margin:'0',zIndex:'1100',pointerEvents:'none',color:getComputedStyle(origin).color,
+      background:'radial-gradient(circle, transparent 34%, color-mix(in srgb,currentColor 50%,transparent) 52%, transparent 70%)',
+    });
+    host.append(ring);
+    const effect=play(ring,[{opacity:.82,scale:'.72'},{opacity:0,scale:'2.35'}],{duration:360,easing:'cubic-bezier(.18,.64,.4,1)'},'ripple');
+    if(!effect){ring.remove();return;}
+    ripples.set(control,effect);
+    const remove=()=>{ring.remove();if(ripples.get(control)===effect)ripples.delete(control);};
+    effect.finished.then(remove,remove);
+  }
   const click=event=>{
     if(event.button>0)return;
-    const control=event.target?.closest?.('button,a[href],summary,input[type=checkbox],input[type=radio]');
-    if(!available(control) || control.matches('.streamer-resize,[role=separator]'))return;
-    if(control.matches('a:not(.button)')){play(control,[{opacity:.6},{opacity:1}],{duration:220});return;}
-    const wide=control.matches('summary,.large,.full,.controller-select'),toggle=control.matches('input');
-    // Move only decoration. Scaling the hit target can lose an edge click or
-    // a second click while the previous rebound is still running.
-    const decorations=[...control.children].filter(child=>child.matches('svg,span:not(.chat-unread),.source-preview'));
-    if(control.matches('summary'))commit(control);
-    if(toggle || !decorations.length){if(!control.matches('summary'))commit(control);return;}
-    for(const decoration of decorations)play(decoration,[
-      {scale:wide?'.992':'.96',offset:0},
-      {scale:wide?'1.012':'1.04',offset:.45},
-      {scale:wide?'.998':'.994',offset:.75},
-      {scale:'1',offset:1}
-    ],{duration:280});
+    const input=event.target?.closest?.(interactive);
+    if(!input?.matches('button,a[href],summary,input[type=checkbox],input[type=radio],input[type=file]') || input.matches('.streamer-resize,[role=separator]'))return;
+    const control=input.matches('input[type=file]')?input.closest('.file-button') || input:input;
+    if(!available(control) || input.disabled)return;
+    if(input.matches('input[type=checkbox],input[type=radio]')){commit(control);return;}
+    const icons=iconsFor(control);
+    if(control.matches('a:not(.button)') && !icons.length){play(control,[{opacity:.6},{opacity:1}],{duration:220});return;}
+    const wide=control.matches('summary,.large,.full,.controller-select,.source-tile,.file-button');
+    // Keep the hit target fixed. Only the glyph or label moves.
+    const decorations=icons.length?icons:[...control.children].filter(child=>child.matches('span:not(.chat-unread),.source-preview') && !child.querySelector(interactive));
+    ripple(control,icons.find(icon=>icon.contains(event.target)) || icons[0] || control);
+    for(const decoration of decorations){
+      channels.get(decoration)?.get('press')?.cancel();
+      channels.get(decoration)?.get('attention')?.cancel();
+      const base=getComputedStyle(decoration).scale;
+      const resting=base==='none'?'1':base;
+      const glyph=icons.includes(decoration);
+      play(decoration,[
+        {scale:resting,easing:'ease-out',offset:0},
+        {scale:glyph?'.94':wide?'.98':'.96',easing:'ease-in-out',offset:.18},
+        {scale:glyph?'1.14':wide?'1.025':'1.06',easing:'ease-out',offset:.48},
+        {scale:resting,offset:1}
+      ],{duration:240,easing:'linear'});
+    }
   };
   function commit(control){
     if(!available(control))return;
     channels.get(control)?.get('commit')?.cancel();
     const style=getComputedStyle(control),tint=style.getPropertyValue('--accent-soft').trim() || 'rgba(200,247,156,.2)';
-    play(control,[{boxShadow:`0 0 0 6px ${tint}`},{boxShadow:style.boxShadow}],{duration:300,easing:'ease-out'},'commit');
+    play(control,[{boxShadow:`inset 0 0 0 2px ${tint}, 0 0 0 3px ${tint}`},{boxShadow:style.boxShadow}],{duration:210,easing:'ease-out'},'commit');
   }
   function finishSwitch(control){
     switches.delete(control);delete control.dataset.switchMotion;for(const property of ['--ui-switch-from','--ui-switch-end','--ui-switch-over'])control.style.removeProperty(property);control.removeEventListener('animationend',switchEnded);control.removeEventListener('animationcancel',switchEnded);
@@ -59,11 +98,17 @@ export function initInteractionMotion(root=document){
     else if(event.target?.matches?.('select,input[type=range],input[type=number],input[type=color]'))commit(event.target);
   };
   const committed=event=>commit(event.detail?.target);
+  const attention=event=>{
+    const control=event.detail;
+    if(!available(control) || ripples.has(control) || document.querySelector('dialog[open]'))return;
+    const [glyph]=iconsFor(control);
+    if(!glyph){commit(control);return;}
+    play(glyph,[{rotate:'0deg'},{rotate:'-10deg',offset:.23},{rotate:'8deg',offset:.49},{rotate:'-4deg',offset:.74},{rotate:'0deg'}],{duration:490},'attention');
+  };
   const toggle=event=>{
     const disclosure=event.target;
-    if(!disclosure?.matches?.('details[open]:not(.call-sheet):not(.peer-menu)') || document.querySelector('#helpDialog[open]') || disclosure.querySelector('video,canvas,.video-stage,.pad-live,.mapper-stick,[data-no-motion]'))return;
-    // Fade safe content without animating heights or moving click targets.
-    for(const child of [...disclosure.children].filter(el=>el.tagName!=='SUMMARY' && el.getClientRects().length).slice(0,3))play(child,[{opacity:.45},{opacity:1}],{duration:170,easing:'ease-out'},'disclosure');
+    if(!disclosure?.matches?.('details[open]:not(.call-sheet,.peer-menu)') || document.querySelector('#helpDialog[open]') || disclosure.querySelector('video,canvas,.video-stage,.pad-live,.mapper-stick,[data-no-motion]'))return;
+    for(const child of [...disclosure.children].filter(el=>el.tagName!=='SUMMARY' && el.getClientRects().length).slice(0,3))play(child,[{opacity:.62},{opacity:1}],{duration:150,easing:'ease-out'},'disclosure');
   };
   const guide=event=>{
     cancel('guide');const {dialog,target,previous}=event.detail || {};if(!available(dialog))return;
@@ -86,8 +131,8 @@ export function initInteractionMotion(root=document){
   const endGuide=()=>cancel('guide'),stop=()=>{cancel();for(const control of [...switches])finishSwitch(control);},visibility=()=>{if(document.hidden)stop();};
   // Capture reaches protected panels without consuming or forwarding inputs.
   root.addEventListener('click',click,true);root.addEventListener('change',change,true);root.addEventListener('toggle',toggle,true);
-  root.addEventListener('ui-control-commit',committed);root.addEventListener('tour-step-motion',guide);root.addEventListener('tour-motion-end',endGuide);root.addEventListener('tour-anchor-move',anchorMove);
+  root.addEventListener('ui-control-commit',committed);root.addEventListener('ui-attention',attention);root.addEventListener('tour-step-motion',guide);root.addEventListener('tour-motion-end',endGuide);root.addEventListener('tour-anchor-move',anchorMove);
   reduced.addEventListener('change',stop);document.addEventListener('visibilitychange',visibility);window.addEventListener('pagehide',stop);window.addEventListener('resize',endGuide);
-  return ()=>{stop();root.removeEventListener('click',click,true);root.removeEventListener('change',change,true);root.removeEventListener('toggle',toggle,true);root.removeEventListener('ui-control-commit',committed);root.removeEventListener('tour-step-motion',guide);root.removeEventListener('tour-motion-end',endGuide);root.removeEventListener('tour-anchor-move',anchorMove);reduced.removeEventListener('change',stop);document.removeEventListener('visibilitychange',visibility);window.removeEventListener('pagehide',stop);window.removeEventListener('resize',endGuide);};
+  return ()=>{stop();root.removeEventListener('click',click,true);root.removeEventListener('change',change,true);root.removeEventListener('toggle',toggle,true);root.removeEventListener('ui-control-commit',committed);root.removeEventListener('ui-attention',attention);root.removeEventListener('tour-step-motion',guide);root.removeEventListener('tour-motion-end',endGuide);root.removeEventListener('tour-anchor-move',anchorMove);reduced.removeEventListener('change',stop);document.removeEventListener('visibilitychange',visibility);window.removeEventListener('pagehide',stop);window.removeEventListener('resize',endGuide);};
 }
 if(typeof document!=='undefined')initInteractionMotion();

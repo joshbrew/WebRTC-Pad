@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "id": "classic",
+  "name": "Classic",
+  "colorScheme": "dark",
+  "stylesheet": "theme.css",
+  "preview": "preview.webp",
+  "description": "Centered call dock and compact graphite panels.",
+  "order": 10
+}

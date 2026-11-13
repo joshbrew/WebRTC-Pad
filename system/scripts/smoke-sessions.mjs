@@ -25,6 +25,9 @@ try{
   const page=async url=>{const value=await context.newPage();value.on('pageerror',e=>errors.push(e.message));value.on('download',()=>downloads++);await value.goto(url);return value;};
   const plainPage=await page(plain.origin);await plainPage.waitForFunction(()=>!!document.body.dataset.platform);assert.equal(await plainPage.locator('#sessionConnection').count(),0,'Disabled hosted invites must not build optional UI');
   const host=await page(hostService.origin),guest=await page(guestService.origin+'/?mode=join');
+  await guest.waitForFunction(()=>document.querySelector('#joinPasteAction').matches('.primary[data-next-action]'));
+  assert.equal(await guest.locator('#joinFocus').isVisible(),false,'Hosted join has one primary link action');
+  assert.equal(await plainPage.locator('#joinFocus').evaluate(button=>button.hidden),false,'Local pairing keeps file import available');
   await host.waitForFunction(()=>!document.querySelector('#sessionConnection').hidden);
   await host.evaluate(async()=>{window.sessionTrace=[];const {SessionInvites}=await import('/sessions.js');const original=SessionInvites.prototype.receive;SessionInvites.prototype.receive=async function(message){const trace={type:message.type,roomMatch:message.roomId===this.roomId};window.sessionTrace.push(trace);await original.call(this,message);trace.afterText=document.querySelector('#sessionJoinRequests').textContent;};});
   await host.locator('#hostCreate').click();await host.waitForFunction(()=>document.querySelector('#hostInviteSheet').open);
@@ -57,14 +60,17 @@ try{
   await guest.waitForFunction(()=>document.querySelector('#clientConnectionText').textContent==='Connected');
   assert.equal(await guest.locator('#sessionCancelJoin').isVisible(),false);
   assert.equal(await guest.locator('#clientReplyAction').isVisible(),false);
+  assert.equal(await guest.locator('#clientReplyExpiry').isVisible(),false);
+  assert.equal(await host.locator('#hostPendingInvites').evaluate(el=>el.hidden),true,'Hosted approvals stay out of the manual reply list');
   console.log('Hosted guest connected');await guest.locator('#clientCallControllers').click();await guest.locator('#controllerAdvanced').evaluate(el=>el.open=true);await guest.locator('#joinKeyboardController').click();await guest.waitForFunction(()=>document.querySelector('#clientSlot').textContent.includes('P1'));
+  await guest.keyboard.press('Escape');
   await guest.locator('#clientStage').click();await guest.keyboard.down('z');await until(()=>writes.some(s=>s.buttons.a),'Remote input did not arrive');await guest.keyboard.up('z');
   const controller=await guest.evaluate(()=>window.sessionPeers[0].localDescription.sdp);assert.doesNotMatch(controller,/m=(audio|video)/);
   await host.locator('#hostCapture').click();await guest.waitForFunction(()=>document.querySelector('#clientVideo').videoWidth===640);
   const name=await guest.locator('#sessionName').inputValue();await guest.locator('#clientDisconnect').click();await until(()=>hostService.app.rooms.values().next().value.peers.size===0,'Guest did not leave');
   await host.locator('#sessionRecipient').evaluate(el=>{for(let parent=el.parentElement;parent;parent=parent.parentElement)if(parent.tagName==='DETAILS')parent.open=true;});await host.locator('#sessionRecipient').fill(name);await host.locator('#sessionInviteName').click();await guest.getByRole('button',{name:'Accept invite',exact:true}).click();
   await guest.waitForFunction(()=>document.querySelector('#clientConnectionText').textContent==='Connected');
-  await host.locator('#peerList .peer-menu').evaluate(el=>el.open=true);await host.getByRole('button',{name:'Disconnect computer',exact:true}).click();await guest.waitForFunction(()=>document.querySelector('#clientConnectionText').textContent!=='Connected');
+  await host.locator('#hostCallPeople').click();await host.locator('#peerList .peer-menu > summary').click();await host.getByRole('button',{name:'Disconnect computer',exact:true}).click();await guest.waitForFunction(()=>document.querySelector('#clientConnectionText').textContent!=='Connected');
   assert.match(await guest.locator('#sessionJoinStatus').textContent(),/declined|ended/);
   const remote=await page(link);await remote.waitForFunction(()=>!document.querySelector('#sessionConnection').hidden);assert.equal(await remote.locator('#modeHost').isVisible(),false);assert.equal(await remote.locator('#sessionInviteLink').inputValue(),link);
   await remote.locator('#modeClient').focus();await remote.keyboard.press('Home');await remote.keyboard.press('ArrowLeft');

@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "id": "cobalt",
+  "name": "Cobalt",
+  "colorScheme": "dark",
+  "stylesheet": "theme.css",
+  "preview": "preview.webp",
+  "description": "Glossy blue lounge with a full-width command deck and centered settings.",
+  "order": 30
+}

@@ -40,20 +40,23 @@ export class HostHandoff{
   to(s,id,action,extra={}){if(id==='host')return this.receive('host',this.packet(s,action,extra),null);this.send(s.links.get(id),this.packet(s,action,extra));}
   upstream(s,action,extra={}){this.send(s.upstream,this.packet(s,action,extra));}
   startState(value){const s={...value,stages:new Map(),committed:new Set(),phase:'preparing'};this.state=s;s.timer=setTimeout(()=>this.cancel('Host switch timed out. The current session is kept.'),90000);s.watch=setInterval(()=>{if(s.phase!=='committing' && (s.coordinator?[...s.links.values()]:[s.upstream]).some(ch=>ch?.readyState!=='open'))this.cancel('A participant disconnected. Host switch cancelled.');},500);this.api.status('Preparing host switch…',true);this.api.lock(true);return s;}
-  request(target){
+  async request(target){
     if(this.busy || !this.api.isHost())return;
     const members=this.api.members(),links=this.api.links();if(!links.has(target))return;
     const s=this.startState({id:crypto.randomUUID(),target,members,links,coordinator:true,old:this.api.snapshot()});s.phase='asking';
-    try{this.to(s,target,'request',{target,members});this.api.status('Waiting for your guest to accept…',true);}catch(error){this.cancel(error.message);}
+    try{
+      const ticket=await this.api.authorize?.(target,members);
+      if(this.state!==s)return;
+      s.local=!!ticket;s.ticket=ticket;
+      this.to(s,target,'request',{target,members,ticket});this.api.status('Sending host switch request…',true);
+    }catch(error){if(this.state===s)this.cancel(error.message);}
   }
   receive(from,message,channel){
     if(message?.type!=='host-handoff' || typeof message.id!=='string' || message.id.length>64)return;
     if(message.action==='request'){
       if(this.busy || this.api.isHost() || channel!==this.api.upstream())return;
       if(!validHandoffMembers(message.members,message.target))return;
-      if(!this.api.canHost() || !this.api.confirm()){this.send(channel,{type:'host-handoff',id:message.id,action:'declined'});return;}
-      const s=this.startState({id:message.id,target:message.target,members:message.members,links:new Map(),upstream:channel,old:this.api.snapshot(),promoted:true});
-      this.upstream(s,'accepted');return;
+      this.ask(message,channel).catch(()=>{});return;
     }
     const s=this.state;
     // Prepare reaches the other guests after the selected guest accepts.
@@ -64,11 +67,25 @@ export class HostHandoff{
     if(!s || message.id!==s.id || (s.coordinator?from!=='host' && s.links.get(from)!==channel:s.upstream!==channel))return;
     this.handle(s,from,message).catch(error=>{if(s.phase==='committing')this.interrupted(s,error.message);else this.cancel(error.message);});
   }
+  async ask(message,channel){
+    if(!this.api.canHost()){this.send(channel,{type:'host-handoff',id:message.id,action:'declined'});return;}
+    const ticket=typeof message.ticket==='string' && /^[0-9a-f]{64}$/.test(message.ticket)?message.ticket:undefined;
+    const s=this.startState({id:message.id,target:message.target,members:message.members,links:new Map(),upstream:channel,old:this.api.snapshot(),promoted:true,ticket});
+    try{
+      const confirmation=this.api.confirm();
+      this.upstream(s,'prompted');
+      const accepted=await confirmation;
+      if(this.state!==s)return;
+      if(!accepted){this.upstream(s,'declined');this.cancel('You declined the host switch.',true);return;}
+      this.upstream(s,'accepted');
+    }catch(error){if(this.state===s)this.cancel(error.message);}
+  }
   async handle(s,from,message){
     if(s!==this.state)return;
+    if(message.action==='prompted' && s.coordinator && from===s.target && s.phase==='asking'){this.api.status('Waiting for your guest to accept…',true);return;}
     if(message.action==='declined' && s.coordinator && from===s.target){this.cancel('Your guest declined. You are still hosting.');return;}
     if(message.action==='accepted' && s.coordinator && from===s.target && s.phase==='asking'){
-      s.phase='preparing';for(const id of s.links.keys())this.to(s,id,'prepare',{target:s.target,members:s.members});return;
+      s.phase='preparing';this.api.status('Preparing the new host…',true);for(const id of s.links.keys())this.to(s,id,'prepare',{target:s.target,members:s.members});return;
     }
     if(message.action==='prepare' && s.promoted && !s.preparing){
       s.preparing=true;await this.api.prepare(s);if(this.state!==s)return;
@@ -99,13 +116,26 @@ export class HostHandoff{
       if(!validHandoffMap(s.members,s.target,message.mapping))throw Error('Invalid host switch membership');
       s.mapping=message.mapping;s.phase='committing';clearTimeout(s.timer);s.timer=setTimeout(()=>this.interrupted(s,'A participant did not finish switching.'),30000);
       const extra={mapping:s.mapping,voice:this.api.voiceRoster(),cameras:this.api.cameraRoster?.() || [],chat:this.api.chatSnapshot?.(),moderation:this.api.moderationSnapshot?.(),screens:this.api.screenRoster?.() || [],screenPolicy:this.api.screenPolicy?.()};
-      for(const id of s.links.keys())this.to(s,id,'commit',extra);await this.apply(s,extra);return;
+      if(s.local){
+        this.api.status('Switching host…',false);
+        this.to(s,s.target,'commit',extra);
+        await this.api.waitForTransfer(s);
+        if(this.state!==s)return;
+      }
+      for(const id of s.links.keys())if(!s.local || id!==s.target)this.to(s,id,'commit',extra);
+      await this.apply(s,extra);return;
     }
     if(message.action==='commit' && !s.coordinator && s.phase==='preparing'){await this.apply(s,message);return;}
     if(message.action==='committed' && s.coordinator){s.committed.add(from);if(s.committed.size===s.members.length)this.finish(s);return;}
     if(message.action==='finalize' && !s.coordinator){if(s.applied)this.finalize(s);else s.finalizePending=true;return;}
-    if(message.action==='interrupted' && s.phase==='committing'){this.interrupted(s,'A participant could not finish switching.',!s.coordinator);return;}
-    if(message.action==='cancel' && s.phase!=='committing'){this.cancel(message.reason || 'Host switch cancelled.',!s.coordinator);}
+    if(message.action==='interrupted' && (s.phase==='committing' || !s.coordinator)){
+      const reason=typeof message.reason==='string'?message.reason.slice(0,320):'A participant could not finish switching.';
+      this.interrupted(s,reason,!s.coordinator);return;
+    }
+    if(message.action==='cancel' && s.phase!=='committing'){
+      const reason=typeof message.reason==='string'?message.reason.slice(0,320):'';
+      this.cancel(reason || 'Host switch cancelled.',!s.coordinator);
+    }
   }
   async apply(s,message){
     if(s.applying || s.applied)return;
@@ -113,7 +143,9 @@ export class HostHandoff{
     if(s.promoted?s.stages.size!==s.members.length-1 || [...s.stages.values()].some(stage=>!stage.ready):!s.client)throw Error('The new controller connections are not ready');
     s.phase='committing';s.applying=true;s.mapping=message.mapping;this.api.status('Switching host…',false);
     clearTimeout(s.timer);s.timer=setTimeout(()=>this.interrupted(s,'The host switch did not finish.'),30000);
-    await this.api.commit(s,message.voice,Array.isArray(message.cameras)?message.cameras:[],message.chat,message.moderation,Array.isArray(message.screens)?message.screens:[],message.screenPolicy);s.applied=true;
+    await this.api.commit(s,message.voice,Array.isArray(message.cameras)?message.cameras:[],message.chat,message.moderation,Array.isArray(message.screens)?message.screens:[],message.screenPolicy);
+    if(this.state!==s)return;
+    s.applied=true;
     if(s.coordinator){s.committed.add('host');if(s.committed.size===s.members.length)this.finish(s);}else this.upstream(s,'committed');
     if(s.finalizePending)this.finalize(s);
   }
@@ -121,10 +153,11 @@ export class HostHandoff{
   finalize(s){if(this.state!==s)return;clearTimeout(s.timer);clearInterval(s.watch);this.api.finalize(s);this.state=null;this.api.lock(false);this.api.status(s.promoted?'You are hosting. Choose a window or screen to share.':'Host switched. Your voice and cameras stay connected.',false);}
   interrupted(s,reason,quiet=false){
     if(this.state!==s)return;
-    if(!quiet){if(s.coordinator){for(const id of s.links.keys())try{this.to(s,id,'interrupted');}catch{}}else try{this.upstream(s,'interrupted');}catch{}}
+    if(!quiet){if(s.coordinator){for(const id of s.links.keys())try{this.to(s,id,'interrupted',{reason});}catch{}}else try{this.upstream(s,'interrupted',{reason});}catch{}}
     clearTimeout(s.timer);clearInterval(s.watch);this.state=null;
     for(const stage of s.stages.values())stage.transport.close();s.client?.transport.close();
-    this.api.interrupted(s);this.api.lock(false);this.api.status(`Host switch interrupted: ${reason} End the session and reconnect if needed.`,false);
+    const unchanged=s.coordinator && s.local && !s.transferred;
+    this.api.interrupted(s);this.api.lock(false);this.api.status(`Host switch interrupted: ${reason}${unchanged?' You are still hosting.':s.applied?' Reconnect if needed.':''}`,false);
   }
   cancel(reason='Host switch cancelled.',quiet=false){
     const s=this.state;if(!s || s.phase==='committing')return;

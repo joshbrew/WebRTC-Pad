@@ -26,6 +26,7 @@ import {AppInputBridge} from './app-input-bridge.js';
 import {ControllerReceiver} from './controller-receiver.js';
 import {controllerPlatform} from '../public/controller-platform.js';
 import {sourceThumbnail} from './source-thumbnail.js';
+import {discoverThemePacks} from './theme-packs.js';
 export { readIce } from './ice.js';
 
 const PUBLIC_DIR = fileURLToPath(new URL('../public/', import.meta.url));
@@ -64,10 +65,12 @@ const sameOrigin = req => {
   try { return new URL(req.headers.origin).host === req.headers.host; } catch { return false; }
 };
 export function createApp({ createInjector = options=>injection.createInjector({...options,env,platform}), createNativeMedia = (captureEnv=env) => new NativeMedia(captureEnv, platform,encoderScanner.peek()?.selected), createDesktop = () => createDesktopInjector(env, platform), createOverlay = (captureEnv=env) => createCursorOverlay(captureEnv, platform), getCaptureTargets = () => captureTargets(env,platform), getMacPermissions = action => macPermissions(action,env), encoderScanner, guestInputService, desktopSimulation = false, env = process.env, platform = process.platform, staleMs = 350 } = {}) {
+  const themePacks = discoverThemePacks(path.join(PUBLIC_DIR, 'themes'));
   const sessionConfig=sessionSettings(env),canHost=req=>!sessionConfig.hosted && localCanHost(req);
   const sessions=sessionConfig.enabled?createSessionServer({maxClients:Number(env.SESSION_SERVER_MAX_CLIENTS || 512)}):null;
   encoderScanner ||= createEncoderScanner({ffmpeg:nativeCapability(env,platform).ffmpeg,env,platform});
   const rooms = new Map();
+  const controllerInstance = random(16);
   const thumbnailTargets=new Map(),thumbnailCache=new Map();let thumbnailReaders=0;
   const appInputBridge=new AppInputBridge(rooms);
   const config = readConfig(env, platform);
@@ -118,6 +121,20 @@ export function createApp({ createInjector = options=>injection.createInjector({
     let pathname;
     try { pathname = decodeURIComponent(new URL(req.url, 'http://localhost').pathname); }
     catch { res.writeHead(400); res.end('Bad URL'); return; }
+    if (pathname === '/themes.json') {
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.end(JSON.stringify(themePacks.themes)); return;
+    }
+    if (pathname.startsWith('/themes/')) {
+      const asset = themePacks.files.get(pathname);
+      if (!asset) { res.writeHead(404); res.end('Not found'); return; }
+      fs.readFile(asset.filename, (error, data) => {
+        if (error) { res.writeHead(404); res.end('Not found'); return; }
+        res.setHeader('Content-Type', asset.contentType);
+        res.end(data);
+      });
+      return;
+    }
     if(pathname.startsWith('/api/inputs')){
       res.setHeader('Content-Type','application/json');if(!canHost(req) || req.headers.origin && !sameOrigin(req)){res.writeHead(403);res.end(JSON.stringify({error:'Local same-origin access only'}));return;}
       if(pathname==='/api/inputs' && req.method==='GET'){res.end(JSON.stringify({version:1,subscribe:'/api/inputs/subscribe',create:'/api/inputs/sessions',sdk:'/input-api.js',guide:'/app-inputs',kinds:['keyboard','mouse','midi','controller','device','reset'],sessions:[...appInputBridge.locals.values()].map(s=>({id:s.id,label:s.label,active:s.publisher?.readyState===1}))}));return;}
@@ -128,7 +145,7 @@ export function createApp({ createInjector = options=>injection.createInjector({
     if (pathname === '/config') {
       if(sessionConfig.hosted){res.setHeader('Content-Type','application/json');res.end(JSON.stringify({app:'webrtc-pad',sessionServer:{hosted:true,url:null}}));return;}
       if (!canHost(req)) { res.writeHead(403); res.end('Local access only'); return; }
-      res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ ...publicConfig(), platform, app: 'webrtc-pad',...(platform==='win32'?{guestInputSetup:{installDeclined:guestInput.capability.installDeclined===true,installApproved:guestInput.capability.installApproved===true}}:{}),...(sessionConfig.url?{sessionServer:{url:sessionConfig.url,hosted:false}}:{}) })); return;
+      res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ ...publicConfig(), controllerInstance, platform, app: 'webrtc-pad',...(platform==='win32'?{guestInputSetup:{installDeclined:guestInput.capability.installDeclined===true,installApproved:guestInput.capability.installApproved===true}}:{}),...(sessionConfig.url?{sessionServer:{url:sessionConfig.url,hosted:false}}:{}) })); return;
     }
     if(pathname==='/mac-permissions'){
       if(platform!=='darwin' || !canHost(req) || req.method==='POST' && !sameOrigin(req)){res.writeHead(403);res.end('Local Mac access only');return;}
@@ -278,6 +295,7 @@ export function createApp({ createInjector = options=>injection.createInjector({
   }
   function removePeerDevices(r,p) { for(const slot of ownedSlots(p))removeDevice(r,slot); }
   async function ensureDevice(r,slot) {
+    const retiring=r.retiringSlots?.get(slot);if(retiring)await retiring;
     if(!r.dynamicControllers || r.createdSlots.has(slot))return;
     if(!r.injector?.addController)throw new Error(r.driverError || 'The controller driver is unavailable or needs an updated helper');
     await r.injector.addController(slot);r.createdSlots.add(slot);
@@ -300,7 +318,21 @@ export function createApp({ createInjector = options=>injection.createInjector({
   function releaseDesktopContext(r, peerId, owner=r) { r.desktopStates?.delete(peerId); r.overlay?.send({type:'remove',id:peerId}); try { desktopState(r); } catch (error) { stopDesktop(r);if(owner===r)send(owner.hostWs,{type:'input-policy',allowKeyboard:owner.allowKeyboard,...desktopPolicy(r)});else{const sourceId=[...owner.extraCaptures].find(([,s])=>s===r)?.[0];if(sourceId)send(owner.hostWs,{type:'view-input-policy',sourceId,policy:desktopPolicy(r)});}send(owner.hostWs,{type:'error',error:`Desktop input: ${error.message}`}); } }
   function stopDesktop(r) { r.desktopStates?.clear(); r.desktop?.close(); r.desktop = null; r.desktopMouse = false; r.desktopKeyboard = false; }
   const closeGuestMedia=(native,id)=>native?.closeGuest?native.closeGuest(id):native?.closePeer(id);
-  function closeRoom(r) {
+  function watchControllerFeedback(r){
+    const controllerRoom={current:r};r.controllerRoom=controllerRoom;
+    r.injector?.onFeedback?.(value=>{
+      const r=controllerRoom.current;
+      if(!rooms.has(r.roomId))return;
+      for(const [peerId,peer] of r.peers){
+        const controller=ownedSlots(peer).indexOf(value.slot);
+        if(controller>=0 && r.active.has(value.slot))send(r.hostWs,{type:'rumble',peerId,controller,generation:peer.generation || 0,large:value.large,small:value.small});
+      }
+    });
+  }
+  function sendCreated(ws,r,previewAdopted=false){
+    send(ws,{type:'created',controllerInstance,roomId:r.roomId,hostKey:r.hostKey,injectToken:r.injectToken,appInputToken:r.appInputToken,driver:status(r),config:publicConfig(r),allowKeyboard:r.allowKeyboard,previewAdopted});
+  }
+  function closeRoom(r,{keepHostSocket=false}={}) {
     if (!rooms.has(r.roomId)) return;
     rooms.delete(r.roomId); clearTimeout(r.timer); resetAll(r);
     appInputBridge.end(r);
@@ -311,7 +343,7 @@ export function createApp({ createInjector = options=>injection.createInjector({
     for(const source of r.extraCaptures?.values() || []){stopDesktop(source);source.native?.close();}r.extraCaptures?.clear();
     r.audioCapture?.native?.close();r.audioCapture=null;
     try { r.injector?.close(); } catch { /* Best effort on shutdown. */ }
-    r.injectWs?.close(); r.hostWs?.close();
+    r.injectWs?.close(); if(!keepHostSocket)r.hostWs?.close();
     for (const p of r.peers.values()) { fallback.closePeer(p); p.ws?.close(); }
   }
   function updateSlots(r, id, assigned, removedController) {
@@ -326,13 +358,43 @@ export function createApp({ createInjector = options=>injection.createInjector({
     send(p.ws,value); send(r.hostWs,{...value,peerId:id});
   }
   function updateSlot(r,id,slot) { const p=r.peers.get(id);if(p)p.wantsController=!!slot;updateSlots(r,id,slot ? [slot] : []); }
+  function authorizeHandoff(ws,req,msg) {
+    if(!canHost(req))throw Error('Open the local app to switch hosts.');
+    const r=rooms.get(ws.roomId);
+    if(!r || r.hostWs!==ws)throw Error('Only the current host can authorize a switch.');
+    if(!r.peers.has(msg.peerId))throw Error('The selected guest is no longer in the session.');
+    const members=Array.isArray(msg.members) && msg.members.length<=r.peers.size+1?msg.members:null;
+    if(!members || !members.includes('host') || !members.includes(msg.peerId) || new Set(members).size!==members.length || members.some(id=>id!=='host' && !r.peers.has(id)))throw Error('The session changed. Try Make host again.');
+    const peers=new Map(),mapping=Object.create(null);
+    let lane=0;
+    for(const id of members){
+      if(id===msg.peerId){mapping[id]={peerId:'host'};continue;}
+      const peerId=random(8),wantsController=id==='host' || r.peers.get(id).wantsController;
+      const slot=!r.dynamicControllers && wantsController && r.slots[lane]?r.slots[lane++]:null;
+      mapping[id]={peerId,wantsController,slot};
+      peers.set(peerId,{ws:null,role:slot || 'watch',slot,slots:slot?[slot]:[],generation:0,manual:true,wantsController});
+    }
+    const ticket=random(32);r.handoff={ticket,expiresAt:Date.now()+90000,peers,mapping,members,stagedWs:null};
+    return {ticket};
+  }
   signal.on('connection', (ws, req) => {
     ws.alive = true; ws.on('pong', () => { ws.alive = true; });
     let queue = Promise.resolve();
+    ws.enqueueSignal=operation=>{
+      const pending=queue.then(operation);
+      queue=pending.catch(()=>{});
+      return pending;
+    };
     ws.on('message', raw => {
+      let msg; try { msg = JSON.parse(raw); } catch { return; }
+      if (!msg || typeof msg.type !== 'string') return;
+      // Issuing a ticket leaves the current room running. It must not wait for capture or ICE work.
+      if(msg.type==='handoff-prepare'){
+        try{send(ws,{type:'native-result',requestId:msg.requestId,result:authorizeHandoff(ws,req,msg)});}
+        catch(error){send(ws,{type:'native-result',requestId:msg.requestId,error:error.message});}
+        return;
+      }
       queue = queue.then(async () => {
-        let msg; try { msg = JSON.parse(raw); } catch { return; }
-        if (!msg || typeof msg.type !== 'string') return;
         if(msg.type.startsWith('audio-')) {
           try {
             const room=ws.roomId?rooms.get(ws.roomId):null;
@@ -395,6 +457,48 @@ export function createApp({ createInjector = options=>injection.createInjector({
             send(ws,{type:'native-result',requestId:msg.requestId,result});
           } catch(error){send(ws,{type:'native-result',requestId:msg.requestId,error:error.message});}return;
         }
+        if(['handoff-stage','handoff-commit'].includes(msg.type)){
+          try{
+            if(!canHost(req))throw Error('Open the local app to switch hosts.');
+            let result;
+            const r=[...rooms.values()].find(room=>room.handoff?.ticket===msg.ticket),transfer=r?.handoff;
+            if(ws.roomId || !transfer || transfer.expiresAt<=Date.now() || r.hostWs?.readyState!==WebSocket.OPEN || transfer.stagedWs && transfer.stagedWs!==ws)throw Error('This host switch expired. Try Make host again.');
+            if(msg.type==='handoff-stage'){
+              transfer.stagedWs=ws;
+              result={mapping:transfer.mapping,ice:await getIce()};
+            }else{
+              // A request that has already timed out in the browser must never transfer ownership later.
+              const deadline=Date.now()+12000;
+              await r.hostWs.enqueueSignal(()=>{
+                if(rooms.get(r.roomId)!==r || r.handoff!==transfer || transfer.expiresAt<=Date.now() || r.hostWs.readyState!==WebSocket.OPEN || ws.readyState!==WebSocket.OPEN)throw Error('This host switch expired. Try Make host again.');
+                if(Date.now()>=deadline)throw Error('The local app is still finishing capture or controller setup. Try Make host again.');
+                if(transfer.stagedWs!==ws)throw Error('Prepare the new host before switching.');
+                if(transfer.members.some(id=>id!=='host' && !r.peers.has(id)))throw Error('The session changed. Try Make host again.');
+                delete r.handoff;
+                // Keep one local backend. Clear the old room's input, capture and
+                // credentials before attaching that backend to its replacement.
+                resetAll(r);
+                const next={adaptiveControllers:r.adaptiveControllers,dynamicControllers:r.dynamicControllers,controllerType:r.controllerType,
+                  controllerLimit:r.controllerLimit,slots:[...r.slots],createdSlots:new Set(r.createdSlots),injector:r.injector,driverError:r.driverError,
+                  roomId:random(6),hostKey:random(24),injectToken:random(24),appInputToken:random(24),hostWs:ws,peers:transfer.peers,
+                  active:new Map(),inputSources:new Map(),desktopStates:new Map(),allowKeyboard:r.allowKeyboard,desktopMouse:false,desktopKeyboard:false};
+                if(next.dynamicControllers){
+                  next.retiringSlots=new Map([...next.createdSlots].map(slot=>[slot,Promise.resolve().then(()=>next.injector?.removeController(slot)).then(()=>next.createdSlots.delete(slot),error=>{next.driverError=error.message;}).finally(()=>next.retiringSlots.delete(slot))]));
+                }
+                rooms.set(next.roomId,next);ws.roomId=next.roomId;ws.role='host';
+                r.injector=null;
+                closeRoom(r,{keepHostSocket:true});
+                next.controllerRoom=r.controllerRoom;
+                if(next.controllerRoom)next.controllerRoom.current=next;
+                sendCreated(ws,next);
+                send(r.hostWs,{type:'handoff-transferred',ticket:msg.ticket});
+                result={switched:true};
+              });
+            }
+            send(ws,{type:'native-result',requestId:msg.requestId,result});
+          }catch(error){send(ws,{type:'native-result',requestId:msg.requestId,error:error.message});}
+          return;
+        }
         if (['create', 'resume', 'join'].includes(msg.type)) {
           if (ws.roomId) throw new Error('Already in a room');
           if (msg.type !== 'join' && !canHost(req)) throw new Error('Open localhost on the gaming computer to host');
@@ -423,9 +527,9 @@ export function createApp({ createInjector = options=>injection.createInjector({
             rooms.set(r.roomId, r); ws.roomId = r.roomId; ws.role = 'host';
             try{await guestInput.setHosting?.(true);}catch(error){closeRoom(r);throw error;}
             try { r.injector = await createInjector({ playerCount: dynamicControllers?0:r.slots.length,controllerType:r.controllerType }); } catch (error) { r.driverError = error.message; }
-            r.injector?.onFeedback?.(value=>{if(!rooms.has(r.roomId))return;for(const [peerId,peer] of r.peers){const controller=ownedSlots(peer).indexOf(value.slot);if(controller>=0 && r.active.has(value.slot))send(r.hostWs,{type:'rumble',peerId,controller,generation:peer.generation || 0,large:value.large,small:value.small});}});
+            watchControllerFeedback(r);
             if (ws.readyState !== WebSocket.OPEN || !rooms.has(r.roomId)) { if (rooms.has(r.roomId)) closeRoom(r); else r.injector?.close(); return; }
-            send(ws, { type: 'created', roomId: r.roomId, hostKey: r.hostKey, injectToken: r.injectToken, appInputToken:r.appInputToken, driver: status(r), config: publicConfig(r), allowKeyboard: r.allowKeyboard,previewAdopted });
+            sendCreated(ws,r,previewAdopted);
             return;
           }
           const r = rooms.get(String(msg.roomId));
@@ -443,7 +547,7 @@ export function createApp({ createInjector = options=>injection.createInjector({
             for(const source of r.extraCaptures?.values() || []){stopDesktop(source);source.native?.close();}r.extraCaptures?.clear();
             resetAll(r); r.injectWs?.close(); r.injectWs = null; previous?.close();
             for (const [id, p] of r.peers) if (p.manual) { removePeerDevices(r,p);fallback.closePeer(p); r.peers.delete(id); }
-            send(ws, { type: 'resumed', roomId: r.roomId, hostKey: r.hostKey, injectToken: r.injectToken, appInputToken:r.appInputToken, driver: status(r), config: publicConfig(r), allowKeyboard: r.allowKeyboard, peers: [...r.peers].map(([peerId, p]) => ({ peerId, role: p.role, slot: p.slot, slots: ownedSlots(p), generation:p.generation || 0 })) });
+            send(ws, { type: 'resumed', controllerInstance, roomId: r.roomId, hostKey: r.hostKey, injectToken: r.injectToken, appInputToken:r.appInputToken, driver: status(r), config: publicConfig(r), allowKeyboard: r.allowKeyboard, peers: [...r.peers].map(([peerId, p]) => ({ peerId, role: p.role, slot: p.slot, slots: ownedSlots(p), generation:p.generation || 0 })) });
             for (const p of r.peers.values()) send(p.ws, { type: 'host-resumed' });
             return;
           }
@@ -565,7 +669,7 @@ export function createApp({ createInjector = options=>injection.createInjector({
               if(r.extraCaptures.size>=32)throw new Error('Remove an unused screen before adding another');
               const source=await nativeSource(msg.id,false),sourceId=random(8);
               if(ws.readyState!==WebSocket.OPEN || !rooms.has(r.roomId))return;
-              // Additional views never inherit system/app audio or desktop access.
+              // Additional views start with their own sound and desktop access off.
               source.captureEnv={...source.captureEnv,NATIVE_AUDIO:'0',NATIVE_AUDIO_ONLY:'0'};
               r.extraCaptures.set(sourceId,{...source,captureTarget:source.target,native:null,desktopStates:new Map()});
               send(ws,{type:'native-result',requestId:msg.requestId,result:{sourceId,target:source.target}});return;
@@ -594,9 +698,11 @@ export function createApp({ createInjector = options=>injection.createInjector({
             else if(msg.type==='native-source-remove'){if(!msg.sourceId)throw new Error('Choose an additional screen');stopDesktop(state);state.native?.close();r.extraCaptures.delete(msg.sourceId);}
             else if (msg.type === 'native-stop') { state.native?.close(); state.native = null; if(!msg.sourceId)send(ws, { type: 'input-policy', allowKeyboard: r.allowKeyboard, ...desktopPolicy(r) }); }
             else if(msg.type==='native-audio') {
-              if(msg.sourceId)throw new Error('Additional screens use video only');
-              const state={target:r.captureTarget,captureEnv:r.captureEnv,native:r.native};
-              result=await changeNativeAudio(state,msg.enabled);r.captureEnv=state.captureEnv;
+              if(msg.sourceId)result=await changeNativeAudio(state,msg.enabled);
+              else {
+                const primary={target:r.captureTarget,captureEnv:r.captureEnv,native:r.native};
+                result=await changeNativeAudio(primary,msg.enabled);r.captureEnv=primary.captureEnv;
+              }
             }
             else {
               if (msg.peerId !== 'preview' && !r.peers.has(msg.peerId)) throw new Error('Player is no longer in the session');
@@ -610,7 +716,7 @@ export function createApp({ createInjector = options=>injection.createInjector({
                   if(!sameProcess(current.target,state.target))throw new Error('This window closed or changed. Remove it and choose a new window.');
                 }
                 if (!state.native) { state.native = createNativeMedia(state.captureEnv || env); state.native.on('status', value => { send(r.hostWs, { ...value, type: 'native-status',...(msg.sourceId?{sourceId:msg.sourceId}:{}) }); }); }
-                result = await state.native.offer(mediaPeer, q, msg.peerId === 'preview' ? { iceServers: [] } : await getIce(),{videoOnly:msg.viewer===true});
+                result = await state.native.offer(mediaPeer, q, msg.peerId === 'preview' ? { iceServers: [] } : await getIce());
                 if(msg.peerId!=='preview' && !r.peers.has(msg.peerId)){closeGuestMedia(state.native,msg.peerId);throw new Error('Player is no longer in the session');}
                 if (msg.peerId === 'preview' && !msg.sourceId) send(ws, { type: 'input-policy', allowKeyboard: r.allowKeyboard, ...desktopPolicy(r) });
               } else if (msg.type === 'native-answer') {
@@ -757,8 +863,17 @@ export function createApp({ createInjector = options=>injection.createInjector({
         r.injector?.setState(slot, state);
         r.active.set(slot, Date.now()); r.inputSources.set(slot, msg.source);
         p.receipts ||= [];
-        if (r.injector && env.INPUT_BACKEND!=='none' && Date.now() - (p.receipts[lane] || 0) > 800) {
-          p.receipts[lane]=Date.now(); send(ws,{type:'input-receipt',peerId:msg.peerId,controller:lane,slot,generation:p.generation || 0});
+        if (r.injector && env.INPUT_BACKEND !== 'none') {
+          const now = Date.now();
+          const pressed = Object.values(state.buttons).some(Boolean) || Object.values(state.axes).some(axis => Math.abs(axis) > .1);
+          const receipt = p.receipts[lane];
+          const generation = p.generation || 0;
+          // A neutral heartbeat confirms the route. Report the first actual
+          // action immediately, even when a heartbeat was just acknowledged.
+          if (receipt?.generation !== generation || now - receipt.at > 800 || (pressed && !receipt.pressed)) {
+            p.receipts[lane] = { at: now, generation, pressed };
+            send(ws, { type: 'input-receipt', peerId: msg.peerId, controller: lane, slot, generation, pressed });
+          }
         }
       } catch (error) { if (r && error.name !== 'SyntaxError') driverError(r, error); }
     });

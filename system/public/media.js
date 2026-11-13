@@ -24,7 +24,10 @@ export async function applyCaptureSettings(track, settings) {
     try { await track.applyConstraints(ideal); }
     catch(fallback){if(!['OverconstrainedError','NotSupportedError'].includes(fallback.name))throw fallback;}
   }
-  track.contentHint = settings.priority === 'resolution' ? 'detail' : 'motion';
+  track.contentHint = videoContentHint(settings);
   return track.getSettings();
+}
+export function videoContentHint(settings = {}) {
+  return settings.autoThrottle!==false && settings.priority==='resolution'?'detail':'motion';
 }
 export function qualityLabel(settings) { return `${settings.resolution === 'native' ? 'Source size' : settings.resolution + 'p'} · ${settings.frameRate} fps`; }

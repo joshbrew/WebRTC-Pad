@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "id": "light",
+  "name": "Light",
+  "colorScheme": "light",
+  "stylesheet": "theme.css",
+  "preview": "preview.webp",
+  "description": "Classic call layout with a light palette.",
+  "order": 40
+}

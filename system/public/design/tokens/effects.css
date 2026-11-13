@@ -22,5 +22,21 @@
 }
 
 /* Motion from the design system: quick, physical, springy on entry, faster on exit. */
-:root{--dur-press:65ms;--dur-quick:140ms;--dur-menu:220ms;--dur-stage:320ms;--dur-stagger:18ms;--ease-out:cubic-bezier(.2,.8,.2,1);--ease-spring:cubic-bezier(.2,1.6,.35,1);--ease-in:cubic-bezier(.4,0,1,1);
+:root{--dur-press:65ms;--dur-quick:140ms;--dur-menu:220ms;--dur-stage:320ms;--ease-out:cubic-bezier(.2,.8,.2,1);--ease-spring:cubic-bezier(.2,1.6,.35,1);--ease-in:cubic-bezier(.4,0,1,1);
 --radius-sm:6px;--radius-md:12px;--radius-lg:18px;--radius-xl:26px}
+
+/* Visual finishes are shared by call components and can be overridden by skins. */
+:root,[data-theme="light"] :is(.video-stage,.host-watch-stage,.host-screen-watch,.view-tile,.camera-tile,.tile-grid,.stage-empty) {
+  --shadow-key-accent:0 2px 0 var(--accent-edge);
+  --shadow-tour-target:0 0 0 7px color-mix(in srgb,var(--accent) 17%,transparent),0 0 25px color-mix(in srgb,var(--accent) 26%,transparent);
+  --attention-ring:0 0 0 1px color-mix(in srgb,var(--accent-text) 50%,transparent),0 0 14px color-mix(in srgb,var(--accent-text) 23%,transparent);
+  --surface-toolbar:color-mix(in srgb,var(--surface-card) 96%,transparent);
+  --surface-media-control:color-mix(in srgb,var(--stage) 90%,transparent);
+  --surface-tool-accent:#a5d4ff;
+  --surface-tool-accent-hover:#c4e3ff;
+  --surface-tool-accent-edge:#3970a0;
+  --text-on-tool-accent:#112b44;
+  --page-finish:none;
+  --panel-finish:none;
+  --accent-finish:none;
+}

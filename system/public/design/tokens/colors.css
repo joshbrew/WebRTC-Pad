@@ -1,5 +1,5 @@
-/* WebRTC Pad colours — generated from the design system tokens. Dark is home; Light via <html data-theme="light">. */
-:root,[data-theme="dark"]{
+/* WebRTC Pad colours â€” generated from the design system tokens. Dark is home; Light via <html data-theme="light">. */
+:root,[data-theme="light"] :is(.video-stage,.host-watch-stage,.host-screen-watch,.view-tile,.camera-tile,.tile-grid,.stage-empty){
   color-scheme:dark;
   --stage:#0b0d0f;
   --surface-page:#121416;
@@ -87,54 +87,10 @@
   --lilac-ink:#3d4185;
   --overlay:#101714dc;
 }
-/* The stage is always a dark island so video, overlays and fullscreen controls read true in both themes. */
-[data-theme="light"] :is(.video-stage,.host-watch-stage,.host-screen-watch,.view-tile,.camera-tile,.tile-grid,.view-popout,.stage-empty){
-  color-scheme:dark;
-  --stage:#0b0d0f;
-  --surface-page:#121416;
-  --surface-card:#1b1e21;
-  --surface-raised:#2a2f33;
-  --surface-hover:#353b3f;
-  --line:#2b3034;
-  --line-strong:#636c6f;
-  --ink:#f1f3ee;
-  --ink-2:#b4bdb7;
-  --ink-3:#8f9896;
-  --accent:#d0f79b;
-  --accent-hover:#e0ffb5;
-  --accent-edge:#8fbf55;
-  --on-accent:#223313;
-  --accent-text:#d0f79b;
-  --accent-soft:#26331d;
-  --accent-soft-ink:#d0f79b;
-  --focus:#d0f79b;
-  --warn-soft:#3a3021;
-  --warn-ink:#ead8b0;
-  --danger:#c63a40;
-  --on-danger:#ffffff;
-  --danger-soft:#442a2d;
-  --danger-ink:#f5b7b7;
-  --player-1:#c8f79c;
-  --player-2:#81d8ff;
-  --player-3:#ffb795;
-  --player-4:#d5b1ff;
-  --player-5:#ffe082;
-  --player-6:#ff97c8;
-  --scrim:#040805b8;
-  --shadow-key:0 2px 0 #0b0d0f;
-  --shadow-key-accent:0 2px 0 #8fbf55;
-  --shadow-pop:0 16px 40px #00000080, 0 0 0 1px #ffffff12;
-  --shadow-dialog:0 30px 90px #000000a6;
-  --accent-line:#3e4e35;
-  --warn-line:#65543a;
-  --danger-line:#5a3438;
-  --lilac-soft:#34364a;
-  --lilac-ink:#c5c9ed;
-  --overlay:#101714dc;
-color:var(--ink);
-}
+/* In light mode, keep media and its controls on the dark palette. */
+[data-theme="light"] :is(.video-stage,.host-watch-stage,.host-screen-watch,.view-tile,.camera-tile,.tile-grid,.view-popout,.stage-empty){color:var(--ink)}
 
-/* Legacy names → new tokens. Existing selectors keep working; new code uses the tokens above. */
+/* Recompute aliases at each palette boundary. */
 :root,[data-theme],[data-theme="light"] :is(.video-stage,.host-watch-stage,.host-screen-watch,.view-tile,.camera-tile,.tile-grid,.view-popout,.stage-empty){
 --graphite-0:var(--stage);--graphite-1:var(--surface-page);--graphite-2:var(--surface-card);--graphite-3:var(--surface-raised);--graphite-4:var(--surface-raised);
 --graphite-5:var(--surface-raised);--graphite-6:var(--surface-raised);--graphite-7:var(--line);--graphite-8:var(--surface-raised);--graphite-9:var(--surface-hover);

@@ -13,26 +13,30 @@ export class VoiceRoom{
     root.innerHTML=`<div class="section-heading"><h3>Voice chat</h3><span data-voice="count" class="small muted"></span></div>
       <div class="row voice-actions"><button data-voice="join" class="button secondary">Join voice</button><button data-voice="listen" class="button small-button">Listen only</button><button data-voice="mic" class="button control" hidden>Mute mic</button><button data-voice="leave" class="button small-button" hidden>Leave voice</button><button data-voice="play" class="button small-button" hidden>Play voices</button></div>
       <p data-voice="status" class="small" role="status"></p><p data-voice="capture-note" class="small muted" hidden></p>
-      <div class="voice-preflight" data-voice="preflight"><button data-voice="preview" class="button secondary" type="button">Turn microphone on</button><label class="voice-input-meter">Microphone level <meter data-voice="level" min="0" max="1" value="0"></meter></label><p class="small muted">Private mic test. Speak to check the level. Your mic joins the call only if the host allows it.</p></div>
-      <details class="advanced voice-preferences"><summary>Devices &amp; sound</summary>
+      <div class="voice-preflight" data-voice="preflight"><button data-voice="preview" class="button secondary" type="button">Turn microphone on</button><p class="small muted">Private mic test. Speak to check the level. Your mic joins the call only if the host allows it.</p></div>
+      <details class="advanced voice-preferences" open><summary>Devices &amp; sound</summary>
         <div class="voice-device-fields"><div class="voice-mic-field"><label class="field-label">Microphone<select data-voice="device"><option value="default">Default microphone</option></select></label><button data-voice="refresh" class="button small-button" title="Refresh audio devices" aria-label="Refresh audio devices"><svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg></button></div>
+        <div class="voice-input-meter"><span>Microphone level</span><meter data-voice="level" aria-label="Microphone level" min="0" max="1" value="0"></meter><span data-voice="level-state">Mic off</span></div>
+        <div class="voice-mic-gain"><label class="field-label">Microphone gain<input data-voice="mic-gain" type="range" min="0" max="200" step="5" value="100" /></label><span data-voice="mic-gain-value" aria-hidden="true">100%</span></div>
         <label data-voice="output-field" class="field-label">Speakers<select data-voice="output"><option value="">Default speakers</option></select></label></div>
         <label class="field-label voice-master-volume">Call volume<input data-voice="volume" type="range" min="0" max="1" step="0.05" value="1" /></label>
         <details class="advanced voice-tuning"><summary>Sound quality</summary>
           <label class="field-label">Quality limit<select data-voice="quality"><option value="128000">High &middot; 128 kb/s</option><option value="192000">Highest &middot; 192 kb/s</option></select></label>
           <label class="check-row"><input data-voice="automatic" type="checkbox" checked /> Adjust quality automatically</label>
-          <label class="check-row"><input data-voice="gain" type="checkbox" checked /> Balance microphone volume</label>
+          <label class="check-row"><input data-voice="gain" type="checkbox" checked /> Automatically balance microphone level</label>
           <label class="check-row"><input data-voice="clean" type="checkbox" checked /> Reduce echo &amp; background noise</label>
           <p class="small muted">Use headphones for clearer sound. Turn off noise reduction for a more natural microphone. Automatic quality adjusts between 64 kb/s and your limit.</p><p data-voice="detail" class="small muted"></p>
         </details>
       </details><div data-voice="audio" hidden></div>`;
     this.$=name=>root.querySelector(`[data-voice="${name}"]`);
-    rememberControls(root,'voice',['device','quality','automatic','gain','clean','output','volume']);
+    rememberControls(root,'voice',['device','quality','automatic','gain','clean','output','volume','mic-gain']);
+    this.$('mic-gain').oninput=()=>this.updateMicGain();
+    this.updateMicGain();
     this.$('join').onclick=()=>this.join(true);this.$('listen').onclick=()=>this.join(false);
     this.$('preview').onclick=()=>this.previewMicrophone();
     this.$('leave').onclick=()=>this.leave();this.$('mic').onclick=()=>this.toggleMic();
     this.$('refresh').onclick=()=>this.devices();this.$('device').onchange=()=>{if(this.mic)this.microphone().catch(error=>this.error(error));};
-    for(const name of ['clean','gain'])this.$(name).onchange=()=>this.mic?.getAudioTracks()[0]?.applyConstraints(this.constraints()).catch(error=>this.error(error));
+    for(const name of ['clean','gain'])this.$(name).onchange=()=>this.micInput?.getAudioTracks()[0]?.applyConstraints(this.constraints()).catch(error=>this.error(error));
     for(const name of ['automatic','quality'])this.$(name).onchange=()=>{for(const p of this.peers.values()){p.budget=null;this.tune(p).catch(()=>{});}};
     this.$('volume').oninput=()=>{this.extra?.updateVolumes();this.onChange?.();};
     this.$('play').onclick=()=>this.play();
@@ -49,10 +53,59 @@ export class VoiceRoom{
     try{if(await this.microphone()){if(this.ready && this.canSpeak())await this.join(true);else this.status('Private microphone test · not shared.');}}catch(error){if(epoch===this.epoch){this.joinPreparedMic=false;this.error(error);}}
     finally{if(epoch===this.epoch){this.micBusy=false;this.render();}}
   }
-  stopMeter(){clearInterval(this.meterTimer);this.meterTimer=null;this.meterStream=null;this.meterContext?.close().catch(()=>{});this.meterContext=null;this.$('level').value=0;}
+  updateMicGain(){
+    const slider=this.$('mic-gain'),label=`${slider.value}%`;
+    this.$('mic-gain-value').textContent=label;
+    slider.setAttribute('aria-valuetext',label);
+    if(this.micGraph){const {context,gain}=this.micGraph;gain.gain.setTargetAtTime(Number(slider.value)/100,context.currentTime,.012);}
+  }
+  createMicGraph(input){
+    let context;
+    try{
+      context=new AudioContext();
+      const source=context.createMediaStreamSource(input),gain=context.createGain(),analyser=context.createAnalyser();
+      const output=context.createMediaStreamDestination();output.channelCount=1;
+      gain.gain.value=Number(this.$('mic-gain').value)/100;
+      analyser.fftSize=256;
+      source.connect(gain).connect(analyser).connect(output);
+      context.resume().catch(()=>{});
+      return {context,gain,analyser,output:output.stream};
+    }catch{
+      context?.close().catch(()=>{});
+      return null;
+    }
+  }
   meter(){
-    const stream=!this.ready && this.preparing?this.mic:null;if(this.meterStream===stream)return;this.stopMeter();if(!stream)return;
-    try{const context=new AudioContext(),source=context.createMediaStreamSource(stream),analyser=context.createAnalyser();analyser.fftSize=256;source.connect(analyser);this.meterContext=context;this.meterStream=stream;context.resume().catch(()=>{});const data=new Float32Array(256);this.meterTimer=setInterval(()=>{analyser.getFloatTimeDomainData(data);this.$('level').value=Math.min(1,Math.sqrt(data.reduce((sum,v)=>sum+v*v,0)/data.length)*4);},80);}catch{this.stopMeter();}
+    const level=this.$('level'),state=this.$('level-state'),graph=this.micGraph;
+    const text=graph?'':this.mic?'Unavailable':this.micBusy?'Opening…':'Mic off';
+    if(state.textContent!==text)state.textContent=text;
+    state.hidden=!text;
+    if(this.meterGraph===graph)return;
+    this.stopMeter();
+    if(!graph)return;
+    this.meterGraph=graph;
+    const data=new Float32Array(graph.analyser.fftSize);
+    this.meterTimer=setInterval(()=>{
+      if(document.hidden || !level.getClientRects().length)return;
+      // Read local input after gain. Muting and push to talk gate the outgoing track.
+      graph.analyser.getFloatTimeDomainData(data);
+      let peak=0;for(const sample of data)peak=Math.max(peak,Math.abs(sample));
+      const reading=peak<.001?0:Math.round(Math.sqrt(Math.min(1,peak))*100)/100;
+      const next=Math.max(reading,Math.floor(level.value*80)/100);
+      if(level.value!==next)level.value=next;
+    },40);
+  }
+  stopMeter(){clearInterval(this.meterTimer);this.meterTimer=null;this.meterGraph=null;this.$('level').value=0;}
+  stopMic(){
+    this.stopMeter();
+    this.releaseMic(this.micInput,this.micGraph);
+    this.micInput=this.micGraph=this.mic=null;
+    this.$('mic-gain').disabled=false;
+  }
+  releaseMic(input,graph){
+    input?.getTracks().forEach(track=>track.stop());
+    graph?.output.getTracks().forEach(track=>track.stop());
+    graph?.context.close().catch(()=>{});
   }
   canSpeak(){return !this.awaitingPolicy && (this.host || this.guestMicAllowed!==false);}
   memberAllowed(id){return id==='host' || this.guestMicAllowed!==false && !this.micBlocks?.has(id);}
@@ -61,7 +114,7 @@ export class VoiceRoom{
   applyMutes(){for(const p of this.peers.values())if(p.audio)p.audio.muted=this.localMuted.has(p.id) || this.roster.find(m=>m.id===p.id)?.micAllowed===false || this.host && !this.memberAllowed(p.id);}
   setGuestMicAllowed(value){
     const changed=this.guestMicAllowed!==value;this.guestMicAllowed=value;if(!changed && !(this.ready && !value && (this.mic || this.micBusy)))return;
-    if(!this.host && !value){this.micToggleRequest=(this.micToggleRequest || 0)+1;this.micBusy=false;this.micRequest=(this.micRequest || 0)+1;this.mic?.getTracks().forEach(t=>t.stop());this.mic=null;this.muted=true;for(const p of this.peers.values())p.sender?.replaceTrack(null).catch(()=>{});this.status('The host has turned off guest microphones. You can still listen.');}
+    if(!this.host && !value){this.micToggleRequest=(this.micToggleRequest || 0)+1;this.micBusy=false;this.micRequest=(this.micRequest || 0)+1;this.stopMic();this.muted=true;for(const p of this.peers.values())this.syncSender(p).catch(()=>{});this.status('The host has turned off guest microphones. You can still listen.');}
     this.applyMutes();
     if(this.host){if(!value)for(const m of this.members.values())if(m.id!=='host')m.mic=false;this.broadcast();}else this.announce();this.render();
   }
@@ -87,11 +140,24 @@ export class VoiceRoom{
     if(!navigator.mediaDevices?.getUserMedia)throw Error('Microphone access needs HTTPS or localhost. You can still listen.');
     const epoch=this.epoch,request=this.micRequest=(this.micRequest || 0)+1,stream=await navigator.mediaDevices.getUserMedia({audio:this.constraints(),video:false});
     if((!(this.preparing && (!this.ready || this.awaitingPolicy)) && !this.canSpeak()) || epoch!==this.epoch || request!==this.micRequest){stream.getTracks().forEach(track=>track.stop());return false;}
-    const old=this.mic,muted=this.muted===true;this.mic=stream;
-    const track=stream.getAudioTracks()[0];track.enabled=!muted;this.extra?.apply();track.contentHint='speech';
-    track.onended=()=>{if(this.mic===stream){this.mic=null;this.muted=true;for(const p of this.peers.values())p.sender?.replaceTrack(null).catch(()=>{});this.status('Microphone disconnected. You can still listen.');this.announce();this.render();}};
-    await Promise.all([...this.peers.values()].map(p=>this.syncSender(p).catch(()=>{})));old?.getTracks().forEach(track=>track.stop());
-    await this.devices();this.announce();this.render();return true;
+    const oldInput=this.micInput,oldGraph=this.micGraph;
+    if(this.mic)this.mic.getAudioTracks()[0].enabled=false;
+    this.micInput=stream;
+    this.micGraph=this.createMicGraph(stream);
+    this.mic=this.micGraph?.output || stream;
+    this.$('mic-gain').disabled=!this.micGraph;
+    const track=this.mic.getAudioTracks()[0];track.enabled=!this.muted;track.contentHint='speech';this.extra?.apply();
+    stream.getAudioTracks()[0].onended=()=>{
+      if(this.micInput!==stream)return;
+      this.stopMic();this.muted=true;
+      for(const p of this.peers.values())this.syncSender(p).catch(()=>{});
+      this.status('Microphone disconnected. You can still listen.');this.announce();this.render();
+    };
+    await Promise.all([...this.peers.values()].map(p=>this.syncSender(p).catch(()=>{})));
+    this.releaseMic(oldInput,oldGraph);
+    if(this.micInput!==stream || epoch!==this.epoch || request!==this.micRequest)return false;
+    await this.devices();if(this.micInput!==stream || epoch!==this.epoch || request!==this.micRequest)return false;
+    this.announce();this.render();return true;
   }
   setReady(ready){this.ready=ready;this.root.hidden=!ready && !this.preparing;if(!ready){this.localMuted.clear();this.micBlocks.clear();this.leave('Voice is off. Connect to a session to join.');}else if(!this.active)this.status('Voice is off. Join when you are ready.');this.render();}
   connect(send){this.awaitingPolicy=!this.host;this.sendControl=send;this.setReady(true);send({type:'voice',action:'hello'});}
@@ -120,7 +186,7 @@ export class VoiceRoom{
   async join(withMic){
     if(!this.ready || this.active || this.busy || this.handoffLocked)return;
     withMic=withMic && this.canSpeak();this.joinPreparedMic=false;
-    if(!withMic){this.mic?.getTracks().forEach(track=>track.stop());this.mic=null;}
+    if(!withMic)this.stopMic();
     const epoch=++this.epoch;this.busy=true;this.micBusy=false;this.muted=false;this.status(withMic?'Allow microphone access to join voice…':'Joining voice…');this.render();
     try{
       const ice=await this.getIce();if(epoch!==this.epoch)return;this.ice=ice;
@@ -129,13 +195,13 @@ export class VoiceRoom{
       this.timer=setInterval(()=>this.stats(),3000);
       this.announce();
       this.status(withMic?'Voice on · your mic is on.':'Listening · your microphone is off.');this.play();
-    }catch(error){if(epoch===this.epoch){this.mic?.getTracks().forEach(track=>track.stop());this.mic=null;this.error(error);}}
+    }catch(error){if(epoch===this.epoch){this.stopMic();this.error(error);}}
     finally{if(epoch===this.epoch){this.busy=false;this.render();}}
   }
   cancelMic(){
     if(!this.active){this.leave('Microphone setup cancelled.');return;}
     this.micToggleRequest=(this.micToggleRequest || 0)+1;this.micRequest=(this.micRequest || 0)+1;this.micBusy=false;this.muted=true;
-    this.mic?.getTracks().forEach(track=>track.stop());this.mic=null;
+    this.stopMic();
     for(const p of this.peers.values())this.syncSender(p).catch(()=>{});
     this.status('Mic off. You can still listen.');this.announce();this.render();
   }
@@ -147,7 +213,7 @@ export class VoiceRoom{
   }
   leave(message='Voice is off.'){
     const wasActive=this.active;this.micToggleRequest=(this.micToggleRequest || 0)+1;this.epoch++;this.active=false;this.busy=false;this.micBusy=false;this.joinPreparedMic=false;this.awaitingPolicy=false;this.session=null;clearInterval(this.timer);
-    this.mic?.getTracks().forEach(track=>track.stop());this.mic=null;this.extra?.stop();
+    this.stopMic();this.extra?.stop();
     for(const id of [...this.peers.keys()])this.closePeer(id);
     if(this.host){if(this.members.delete('host'))this.broadcast();}else if(wasActive)this.sendControl?.({type:'voice',action:'leave'});
     this.$('play').hidden=true;this.status(message);this.render();

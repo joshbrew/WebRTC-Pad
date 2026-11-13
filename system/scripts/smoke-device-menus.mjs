@@ -34,8 +34,19 @@ try{
   await page.locator('#clientAutoThrottle').evaluate(el=>{el.checked=false;el.dispatchEvent(new Event('change',{bubbles:true}));});
   await page.reload();assert.equal(await page.locator('#clientMinimumResolution').inputValue(),'720');assert.equal(await page.locator('#clientAutoThrottle').isChecked(),false);
   await page.locator('#clientAutoThrottle').evaluate(el=>{el.checked=true;el.dispatchEvent(new Event('change',{bubbles:true}));});
-  for(const width of [1366,1024,860,390]){
-    await page.setViewportSize({width,height:820});await page.locator('#modeHost').click();const before=await page.locator('.mode-switch').boundingBox();await page.locator('#modeClient').click();const after=await page.locator('.mode-switch').boundingBox();assert.ok(Math.abs(before.x-after.x)<1,`Host/Join stays put at ${width}px: ${before.x} vs ${after.x}`);assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false,`No horizontal overflow at ${width}px`);
+  for(const width of [1366,1024,860,824,600,390,320]){
+    await page.setViewportSize({width,height:820});
+    let previousCenter;
+    for(const tab of ['#modeHost','#modeClient']){
+      await page.locator(tab).click();
+      const [brand,mode,actions]=await Promise.all(['.app-header .brand','.mode-switch','.header-right'].map(selector=>page.locator(selector).boundingBox()));
+      const center=rect=>rect.y+rect.height/2;
+      assert.ok(Math.abs(center(brand)-center(mode))<2 && Math.abs(center(mode)-center(actions))<2,`Header stays on one row at ${width}px`);
+      assert.ok(brand.x+brand.width<=mode.x && mode.x+mode.width<=actions.x,`Header controls stay separate at ${width}px`);
+      if(previousCenter!==undefined)assert.ok(Math.abs(mode.x-previousCenter)<1,`Host/Join stays put at ${width}px`);
+      previousCenter=mode.x;
+      assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false,`No horizontal overflow at ${width}px`);
+    }
   }
   await page.setViewportSize({width:1366,height:820});await page.locator('#modeHost').click();
   const files=page.locator('#hostAllowFiles').locator('..').locator('..');
@@ -45,27 +56,32 @@ try{
   await fs.mkdir('.local/screenshots',{recursive:true});await page.screenshot({path:'.local/screenshots/session-permissions-polished.png'});
   await page.locator('#modeClient').click();
   await page.evaluate(async()=>{const {VoiceRoom}=await import('/voice.js');const preview=VoiceRoom.prototype.previewMicrophone;VoiceRoom.prototype.previewMicrophone=function(...args){window.voice=this;return preview.apply(this,args);};});
+  const joinCardHeight=(await page.locator('#clientStage').boundingBox()).height;
   await page.locator('#clientPrepareCamera').click();await page.locator('#clientCamera [data-camera=toggle]').click();
   await page.waitForFunction(()=>document.querySelector('#clientCamera [data-camera=toggle]').getAttribute('aria-pressed')==='true');
+  assert.equal(await page.locator('#clientCamera .camera-device-preview').isVisible(),true);
+  assert.equal((await page.locator('#clientStage').boundingBox()).height,joinCardHeight,'Pre-join camera stays inside its device panel');
   await page.evaluate(()=>window.scrollTo(0,Math.min(90,document.documentElement.scrollHeight-innerHeight)));const scroll=await page.evaluate(()=>scrollY);
   const micButton=await page.locator('#clientPrepareMic').boundingBox();await page.mouse.click(micButton.x+micButton.width/2,Math.min(800,micButton.y+micButton.height/2));await page.waitForFunction(()=>document.querySelector('#clientSettingsSheet').open);assert.equal(await page.locator('#clientCameraSheet').evaluate(el=>el.open),false);await page.waitForFunction(top=>Math.abs(scrollY-top)<3,scroll);assert.ok(Math.abs(await page.evaluate(()=>scrollY)-scroll)<3,'Menu switch does not jump the page: '+JSON.stringify({before:scroll,after:await page.evaluate(()=>scrollY),height:await page.evaluate(()=>document.documentElement.scrollHeight),pane:await page.locator('#clientSettingsSheet [role=tab][aria-selected=true]').getAttribute('aria-controls')}));
   await page.locator('#clientVoice [data-extra=ptt]').check();await page.locator('#clientVoice [data-voice=preview]').click();await page.waitForFunction(()=>window.voice?.mic && document.querySelector('#clientVoice [data-voice=level]').value>.05);
   await page.locator('#clientVoice [data-extra=ptt]').uncheck();
+  await page.locator('#clientVoice [data-voice=mic-gain]').evaluate(el=>{el.value='75';el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));});
   assert.equal(await page.evaluate(()=>window.voice.active===true || window.voice.peers.size>0),false,'Private mic test never starts a call');assert.equal(await page.evaluate(()=>window.voice.outgoingTrack('host')),null);
   await page.screenshot({path:'.local/screenshots/private-microphone-test.png'});
   await page.locator('#clientVoice [data-voice=automatic]').evaluate(el=>{el.checked=false;el.dispatchEvent(new Event('change',{bubbles:true}));});
-  await page.locator('#clientVoice [data-voice=preview]').click();await page.waitForFunction(()=>!window.voice.mic && !window.voice.meterContext);
+  await page.locator('#clientVoice [data-voice=preview]').click();await page.waitForFunction(()=>!window.voice.mic && !window.voice.micGraph);
   await page.evaluate(()=>window.denyMic=true);await page.locator('#clientVoice [data-voice=preview]').click();await page.waitForFunction(()=>document.querySelector('#clientVoice [data-voice=status]').textContent.includes('blocked'));assert.equal(await page.locator('#clientVoice [data-voice=status]').isVisible(),true);await page.evaluate(()=>window.denyMic=false);
   await page.locator('#clientVoice [data-voice=preview]').click();await page.waitForFunction(()=>!!window.voice.mic);
   await page.locator('#modeHost').click();await page.waitForFunction(()=>window.mediaStreams.every(s=>s.getTracks().every(t=>t.readyState==='ended')));
   await page.reload();await page.waitForFunction(()=>document.querySelector('#hostCameraLimits [data-call-limit=automatic]').checked===false);
   await page.locator('#modeClient').click();await page.locator('#clientPrepareMic').click();assert.equal(await page.locator('#clientVoice [data-voice=automatic]').isChecked(),false);
+  assert.equal(await page.locator('#clientVoice [data-voice=mic-gain]').inputValue(),'75','Microphone gain survives reload');
   assert.equal(await page.locator('#clientCallSounds').isChecked(),true,'Call sounds default on');await page.locator('#clientCallSounds').evaluate(el=>{el.checked=false;el.dispatchEvent(new Event('change',{bubbles:true}));});await page.reload();assert.equal(await page.locator('#clientCallSounds').isChecked(),false,'Saved mute preference survives');
   await page.evaluate(async()=>{const {VoiceRoom}=await import('/voice.js');const preview=VoiceRoom.prototype.previewMicrophone;VoiceRoom.prototype.previewMicrophone=function(...args){window.voice=this;return preview.apply(this,args);};const receive=VoiceRoom.prototype.receive;VoiceRoom.prototype.receive=function(from,msg){if(window.holdVoicePolicy && ['hello','members'].includes(msg?.action)){(window.voicePolicies ||= []).push([from,msg]);return;}return receive.call(this,from,msg);};const {CameraRoom}=await import('/camera.js');const ready=CameraRoom.prototype.setReady;CameraRoom.prototype.setReady=function(...args){if(args[0] && this.constructor===CameraRoom)window.camera=this;return ready.apply(this,args);};});
   await page.locator('#clientPrepareMic').click();await page.locator('#clientVoice [data-voice=preview]').click();await page.waitForFunction(()=>!!window.voice?.mic);const captures=await page.evaluate(()=>window.mediaCalls.length);
   const host=await context.newPage();host.on('pageerror',e=>errors.push(e.message));await host.goto(origin+'/?mode=host');
   await host.evaluate(async()=>{const {VoiceRoom}=await import('/voice.js');const ready=VoiceRoom.prototype.setReady;VoiceRoom.prototype.setReady=function(...args){if(args[0])window.voice=this;return ready.apply(this,args);};});
-  await host.locator('#hostCreateTop').click();
+  await host.locator('#hostCreate').click();
   const pair=async()=>{if(!await host.locator('#hostInviteSheet').evaluate(el=>el.open))await host.locator('#inviteFocus').click();const old=await host.locator('#hostInvitation').inputValue();await host.locator(old?'#newInvitation':'#createInvitation').click();await host.waitForFunction(old=>!!document.querySelector('#hostInvitation').value && document.querySelector('#hostInvitation').value!==old,old);await page.locator('#clientInvitationFile').setInputFiles({name:'invite.json',mimeType:'application/json',buffer:Buffer.from(await host.locator('#hostInvitation').inputValue())});await page.waitForFunction(()=>!!document.querySelector('#clientReply').value);await host.locator('#hostReplyFile').setInputFiles({name:'reply.json',mimeType:'application/json',buffer:Buffer.from(await page.locator('#clientReply').inputValue())});await page.waitForFunction(()=>document.querySelector('#clientConnectionText').textContent==='Connected');};
   await pair();await page.waitForFunction(()=>window.voice.active && !!window.voice.mic);assert.equal(await page.evaluate(()=>window.mediaCalls.length),captures,'Joining keeps the privately prepared microphone without reopening it');
   await page.waitForFunction(()=>window.camera?.sessionLimit.automatic===false);assert.equal(await page.evaluate(()=>window.camera.settings().automatic),false,'Host fixed camera policy reaches the guest');

@@ -6,11 +6,12 @@ import {pathToFileURL} from 'node:url';
 import fs from 'node:fs/promises';
 import {createApp} from '../src/server.js';
 const {chromium}=await import(pathToFileURL(process.env.PLAYWRIGHT_MODULE).href);
-const writes=[[],[],[]],errors=[],apps=[],failDriver=[false,true,false];let browser,pages=[];
+const sameLocalApp=process.argv.includes('--same-local-app');
+const writes=[[],[],[]],errors=[],apps=[],failDriver=[false,true,false],drivers=[0,0,0];let browser,pages=[];
 const until=async(predicate,label,timeout=25000)=>{const end=Date.now()+timeout;while(!await predicate()){if(Date.now()>end)throw Error(label);await new Promise(r=>setTimeout(r,50));}};
 try{
   for(let i=0;i<3;i++){
-    const app=createApp({env:{},desktopSimulation:true,createInjector:async()=>{if(failDriver[i])throw Error('Test driver unavailable');return {name:'Handoff recording driver',addController(){},removeController(){},setState(slot,state){writes[i].push({slot,state});},close(){}};}});
+    const app=createApp({env:{},desktopSimulation:true,createInjector:async()=>{if(failDriver[i])throw Error('Test driver unavailable');drivers[i]++;return {name:'Handoff recording driver',addController(){},removeController(){},setState(slot,state){writes[i].push({slot,state});},close(){}};}});
     apps.push(app);app.server.listen(0,'127.0.0.1');await once(app.server,'listening');
   }
   browser=await launchTestBrowser(chromium,{...(process.env.BROWSER_CHANNEL && process.env.BROWSER_CHANNEL!=='chromium'?{channel:process.env.BROWSER_CHANNEL}:process.env.BROWSER_CHANNEL?{}:{channel:'msedge'}),headless:true,args:['--autoplay-policy=no-user-gesture-required','--disable-background-timer-throttling','--disable-renderer-backgrounding']});
@@ -28,17 +29,27 @@ try{
   });
   for(let i=0;i<3;i++){
     const p=await context.newPage();pages.push(p);p.on('pageerror',error=>errors.push(error.message));p.on('dialog',dialog=>dialog.accept());
-    await p.goto(`http://127.0.0.1:${apps[i].server.address().port}/?mode=${i?'join':'host'}`);
+    const app=sameLocalApp && i===1?apps[0]:apps[i];
+    await p.goto(`http://127.0.0.1:${app.server.address().port}/?mode=${i?'join':'host'}`);
     await p.evaluate(async tone=>{window.tone=tone;const {SessionChat}=await import('/chat.js'),chatReady=SessionChat.prototype.setReady;SessionChat.prototype.setReady=function(...args){if(args[0])window.chat=this;return chatReady.apply(this,args);};const {CameraRoom}=await import('/camera.js'),ready=CameraRoom.prototype.setReady;CameraRoom.prototype.setReady=function(...args){if(args[0] && this.constructor===CameraRoom)window.camera=this;return ready.apply(this,args);};const {ScreenRoom}=await import('/screen-room.js'),screenReady=ScreenRoom.prototype.setReady;ScreenRoom.prototype.setReady=function(...args){if(args[0])window.screens=this;return screenReady.apply(this,args);};const {VoiceRoom}=await import('/voice.js'),join=VoiceRoom.prototype.join;VoiceRoom.prototype.join=function(...args){window.voice=this;return join.apply(this,args);};const {HostHandoff}=await import('/handoff.js'),start=HostHandoff.prototype.startState;HostHandoff.prototype.startState=function(...args){window.handoff=this;return start.apply(this,args);};},440+i*220);
   }
   const [a,b,c]=pages;
+  const openPeople=host=>host.locator('#hostCallPeople').evaluate(button=>{if(!document.querySelector('#hostPeopleSheet').open)button.click();});
+  const makeHost=async(host,guest,action='Accept')=>{
+    await openPeople(host);
+    await host.locator('#peerList').getByRole('button',{name:'Make host',exact:true}).first().click();
+    const button=guest.locator('#handoffPrompt').getByRole('button',{name:action,exact:true});
+    await button.waitFor();
+    await host.waitForFunction(()=>document.querySelector('#handoffStatus').textContent==='Waiting for your guest to accept…');
+    await button.click();
+  };
   const pair=async(host,guest)=>{
     await host.locator('#inviteFocus').click();const previous=await host.locator('#hostInvitation').inputValue();await host.locator(previous?'#newInvitation':'#createInvitation').click();await host.waitForFunction(old=>document.querySelector('#hostInvitation').value!==old,previous);
     await guest.locator('#clientInvitationFile').setInputFiles({name:'invite.txt',mimeType:'text/plain',buffer:Buffer.from(await host.locator('#hostInvitation').inputValue())});await guest.waitForFunction(()=>!!document.querySelector('#clientReply').value);
     await host.locator('#hostReplyFile').setInputFiles({name:'reply.txt',mimeType:'text/plain',buffer:Buffer.from(await guest.locator('#clientReply').inputValue())});await guest.waitForFunction(()=>document.querySelector('#clientConnectionText').textContent==='Connected');
   };
   await a.locator('#hostCreate').click();await a.waitForFunction(()=>!document.querySelector('#createInvitation').disabled);await pair(a,b);await pair(a,c);
-  await until(async()=>await a.getByRole('button',{name:'Make host',exact:true}).count()===2,'Host capability was not advertised');
+  await until(async()=>await a.locator('#peerList button').filter({hasText:/^Make host$/}).count()===2,'Host capability was not advertised');
   await a.locator('#hostCallChat').click();await a.locator('#hostChat [data-chat=input]').fill('Welcome to this call.');await a.locator('#hostChat [data-chat=input]').press('Enter');for(const p of pages)await p.waitForFunction(()=>window.chat?.history.entries.some(e=>e.text==='Welcome to this call.'));for(const p of pages)await p.evaluate(()=>window.chatLive=window.chat);await a.locator('#hostChatSheet .help-button').click();
   // Keyboard editor uses the design system and sends the actual remapped state.
   await c.locator('#clientCallControllers').click();await c.locator('#controllerAdvanced').evaluate(el=>el.open=true);await c.locator('#joinKeyboardController').click();await c.waitForFunction(()=>document.querySelector('#clientSlot').textContent==='P1');
@@ -54,17 +65,34 @@ try{
   await b.locator('#clientCallShare').click();for(const p of pages)await p.waitForFunction(()=>window.screens.peers.size>0 && [...window.screens.peers.values()].every(p=>p.pc.connectionState==='connected'));for(const p of pages)await p.evaluate(()=>{window.screenLive=window.screens;window.screenPCs=[...window.screens.peers.values()].map(p=>p.pc);window.screenTrack=window.screens.stream?.getVideoTracks()[0];});
   for(const p of pages)await p.evaluate(()=>{window.cameraLive=window.camera;window.cameraPCs=[...window.camera.peers.values()].map(p=>p.pc);window.cameraTrack=window.camera.stream.getVideoTracks()[0];window.voicePCs=[...window.voice.peers.values()].map(p=>p.pc);window.micTrack=window.voice.mic.getAudioTracks()[0];});
   await a.locator('#hostCapture').click();await c.waitForFunction(()=>document.querySelector('#clientVideo').videoWidth===640);
-  let decline=true;b.removeAllListeners('dialog');b.on('dialog',dialog=>decline?(decline=false,dialog.dismiss()):dialog.accept());
-  await a.getByRole('button',{name:'Make host',exact:true}).first().click();await a.waitForFunction(()=>document.querySelector('#handoffStatus').textContent.includes('declined'));assert.equal(await a.locator('#hostPanel').isVisible(),true);assert.equal(await a.evaluate(()=>window.streams[0].getVideoTracks()[0].readyState),'live');
-  await a.getByRole('button',{name:'Make host',exact:true}).first().click();await a.waitForFunction(()=>document.querySelector('#handoffStatus').textContent.includes('needs its controller driver'));
-  await b.waitForFunction(()=>window.handoff.api.canHost());assert.equal(await a.evaluate(()=>window.streams[0].getVideoTracks()[0].readyState),'live','Failed setup must keep the original share');failDriver[1]=false;
+  await makeHost(a,b,'Decline');await a.waitForFunction(()=>document.querySelector('#handoffStatus').textContent.includes('declined'));assert.equal(await a.locator('#hostPanel').isVisible(),true);assert.equal(await a.evaluate(()=>window.streams[0].getVideoTracks()[0].readyState),'live');
+  const notice=a.locator('#handoffNotice'),heading=a.locator('.host-watch-heading');
+  assert.equal(await heading.locator('#handoffNotice').count(),1);
+  for(const width of [1440,390]){
+    await a.setViewportSize({width,height:850});
+    await a.waitForFunction(()=>{
+      const bounds=selector=>document.querySelector(selector).getBoundingClientRect();
+      return bounds('.host-watch-heading').top-bounds('.app-header').bottom<=12 && bounds('#handoffNotice').right<=innerWidth && bounds('#hostWatchStage').top>=bounds('#handoffNotice').bottom;
+    });
+  }
+  await a.setViewportSize({width:1440,height:1000});
+  await notice.getByRole('button',{name:'Dismiss host switch message'}).click();
+  assert.equal(await notice.isVisible(),false);
+  if(!sameLocalApp){
+    await makeHost(a,b);await a.waitForFunction(()=>document.querySelector('#handoffStatus').textContent.includes('needs its controller driver'));
+    await b.waitForFunction(()=>window.handoff.api.canHost());assert.equal(await a.evaluate(()=>window.streams[0].getVideoTracks()[0].readyState),'live','Failed setup must keep the original share');failDriver[1]=false;
+  }
   await b.evaluate(()=>{const prepare=window.handoff.api.prepare;window.handoff.api.prepare=async function(s){await prepare.call(this,s);if(window.holdPreparation)await new Promise(resolve=>window.releasePreparation=resolve);};window.holdPreparation=true;});
-  await a.getByRole('button',{name:'Make host',exact:true}).first().click();await b.waitForFunction(()=>!!window.releasePreparation);await a.locator('#handoffCancel').click();await b.evaluate(()=>{window.holdPreparation=false;window.releasePreparation();});await b.waitForFunction(()=>!window.handoff.busy && window.handoff.api.canHost());assert.equal(await a.evaluate(()=>window.streams[0].getVideoTracks()[0].readyState),'live','Cancelled preparation must keep original capture');
+  await makeHost(a,b);await b.waitForFunction(()=>!!window.releasePreparation);await a.locator('#handoffCancel').click();await b.evaluate(()=>{window.holdPreparation=false;window.releasePreparation();});await b.waitForFunction(()=>!window.handoff.busy && window.handoff.api.canHost());assert.equal(await a.evaluate(()=>window.streams[0].getVideoTracks()[0].readyState),'live','Cancelled preparation must keep original capture');
   await a.evaluate(()=>{for(let n=0;n<70;n++)window.chatLive.accept('host',{request:`history-${n}`,text:`Session history ${n} · `+'🎮'.repeat(400)});});for(const p of pages)await p.waitForFunction(()=>window.chatLive.history.entries.length===71);await b.evaluate(()=>{window.chatLive.history.entries=window.chatLive.history.entries.slice(-1);window.chatLive.render();});
   await b.bringToFront();await b.locator('#clientFullscreen').click();await b.waitForFunction(()=>!!document.fullscreenElement);
-  await a.getByRole('button',{name:'Make host',exact:true}).first().click();
-  await until(async()=>await b.locator('#hostPanel').isVisible() && await a.locator('#clientPanel').isVisible() && await b.getByRole('button',{name:'Make host',exact:true}).count()===2,'Host role did not switch',60000);
+  await makeHost(a,b);
+  await until(async()=>await b.locator('#hostPanel').isVisible() && await a.locator('#clientPanel').isVisible() && await b.locator('#peerList button').filter({hasText:/^Make host$/}).count()===2,'Host role did not switch',60000);
   for(const p of pages)await p.waitForFunction(()=>window.handoff && !window.handoff.busy);
+  if(sameLocalApp){
+    assert.equal(apps[0].rooms.size,1,'Two windows share one local room');
+    assert.equal(drivers[0],1,'The local handoff reuses the controller backend');
+  }
   assert.deepEqual(await b.evaluate(()=>window.cameraLive.sessionLimit),{height:360,fps:15});assert.deepEqual(await c.evaluate(()=>window.cameraLive.settings()),{height:240,fps:10});assert.equal(await c.evaluate(()=>window.voice.localMuted.has(window.voice.roster.find(m=>m.session===window.oldHostVoiceSession).id)),true,'Personal mutes follow the person through a host switch');
   assert.equal(await b.evaluate(()=>document.fullscreenElement),null,'New host must exit guest fullscreen to see its hosting controls');
   assert.equal(await a.evaluate(()=>window.streams[0].getVideoTracks()[0].readyState),'ended','Old screen capture must stop');assert.equal(await b.evaluate(()=>window.streams.length),1,'Host switching must not request another capture beyond the existing guest share');
@@ -73,22 +101,23 @@ try{
   for(const p of pages){await p.waitForFunction(()=>window.chatLive.synced);assert.ok(await p.evaluate(()=>window.chatLive.history.entries.some(e=>e.text==='Welcome to this call.')),'Chat history must survive host switching');}
   await b.locator('#hostCallChat').click();await b.locator('#hostChat [data-chat=input]').fill('The new host can continue this chat.');await b.locator('#hostChat [data-chat=input]').press('Enter');for(const p of pages)await p.waitForFunction(()=>window.chatLive.history.entries.some(e=>e.text==='The new host can continue this chat.'));await b.locator('#hostChatSheet .help-button').click();
   await c.waitForFunction(()=>document.querySelector('#clientSlot').textContent.includes('P2'));
-  await c.waitForFunction(()=>document.querySelector('#clientSlot').textContent.includes('P'));await c.locator('#clientStage').focus();await c.keyboard.down('v');await until(()=>writes[1].some(p=>p.state.buttons.a),'Existing guest controller did not move to new host');await c.keyboard.up('v');
+  const targetWrites=writes[sameLocalApp?0:1];targetWrites.length=0;
+  await c.waitForFunction(()=>document.querySelector('#clientSlot').textContent.includes('P'));await c.locator('#clientStage').focus();await c.keyboard.down('v');await until(()=>targetWrites.some(p=>p.state.buttons.a),'Existing guest controller did not move to new host');await c.keyboard.up('v');
   assert.equal(await b.locator('#hostDesktopMouse').isChecked(),false);assert.equal(await b.locator('#hostDesktopKeyboard').isChecked(),false);assert.equal(await b.locator('#hostDesktopFull').isChecked(),false);
   await b.locator('#hostCapture').click();for(const p of [a,c])await p.waitForFunction(()=>document.querySelector('#clientVideo').videoWidth===640);
-  await a.locator('#clientCallControllers').click();await a.locator('#controllerAdvanced').evaluate(el=>el.open=true);await a.locator('#joinKeyboardController').click();await a.waitForFunction(()=>document.querySelector('#clientSlot').textContent.includes('P'));await a.locator('#clientStage').focus();await a.keyboard.down('z');await until(()=>writes[1].some(p=>p.state.buttons.a),'Former host could not join as guest');await a.keyboard.up('z');
+  targetWrites.length=0;await a.locator('#clientCallControllers').click();await a.locator('#controllerAdvanced').evaluate(el=>el.open=true);await a.locator('#joinKeyboardController').click();await a.waitForFunction(()=>document.querySelector('#clientSlot').textContent.includes('P'));await a.locator('#clientStage').focus();await a.keyboard.down('z');await until(()=>targetWrites.some(p=>p.state.buttons.a),'Former host could not join as guest');await a.keyboard.up('z');
   await fs.mkdir('.local/screenshots',{recursive:true});await b.screenshot({path:'.local/screenshots/host-handoff.png',fullPage:true});await c.locator('#clientCallControllers').evaluate(el=>{if(!document.querySelector('#controllersSheet').open)el.click();});await c.locator('[data-controller-id="keyboard"] .controller-map').click();await c.screenshot({path:'.local/screenshots/keyboard-mapping.png'});
   await c.locator('[data-keyboard="names"]').selectOption('switch');assert.equal(await c.locator('[data-binding="a"]').getAttribute('aria-label'),'Assign key for B');
   await c.locator('[data-group="movement"]').click();await c.locator('[data-binding="lxPositive"]').click();await c.keyboard.press('KeyD');await c.locator('[data-keyboard="save"]').click();
-  await c.locator('#clientStage').focus();await c.keyboard.down('d');await until(()=>writes[1].some(p=>p.state.axes.lx===1),'Custom stick key was not streamed');await c.keyboard.up('d');
+  await c.locator('#clientStage').focus();await c.keyboard.down('d');await until(()=>targetWrites.some(p=>p.state.axes.lx===1),'Custom stick key was not streamed');await c.keyboard.up('d');
   await c.locator('#clientCallControllers').evaluate(el=>{if(!document.querySelector('#controllersSheet').open)el.click();});await c.locator('[data-controller-id="keyboard"] .controller-map').click();await c.setViewportSize({width:390,height:800});assert.equal(await c.locator('[data-keyboard="dialog"]').isVisible(),true,'Phone navigation must not hide the modal');assert.equal(await c.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false,'Phone keyboard editor overflows');await c.screenshot({path:'.local/screenshots/keyboard-mapping-phone.png'});await c.setViewportSize({width:1440,height:1000});
   await c.locator('[data-keyboard="close"]').click();await b.evaluate(id=>window.voice.setMemberAllowed(id,false),await c.evaluate(()=>window.voice.self));await c.waitForFunction(()=>!window.voice.canSpeak() && !window.voice.mic);
-  await b.getByRole('button',{name:'Make host',exact:true}).first().click();await until(async()=>await a.locator('#hostPanel').isVisible() && await b.locator('#clientPanel').isVisible(),'Switch back failed',60000);for(const p of pages)await p.waitForFunction(()=>window.handoff && !window.handoff.busy);
+  await makeHost(b,a);await until(async()=>await a.locator('#hostPanel').isVisible() && await b.locator('#clientPanel').isVisible(),'Switch back failed',60000);for(const p of pages)await p.waitForFunction(()=>window.handoff && !window.handoff.busy);
   assert.equal(await c.evaluate(()=>window.voice.canSpeak()),false,'Host microphone restrictions survive switching back');assert.equal(await a.evaluate(id=>window.voice.micBlocks.has(id),await c.evaluate(()=>window.voice.self)),true);
   for(const p of pages)assert.equal(await p.evaluate(()=>window.voicePCs.every(pc=>[...window.voice.peers.values()].some(p=>p.pc===pc) && pc.connectionState==='connected')),true,'Voice failed after switching back');
   for(const p of pages)assert.ok(await p.evaluate(()=>window.chatLive.history.entries.some(e=>e.text==='The new host can continue this chat.')));assert.deepEqual(errors,[]);await a.locator('#hostEnd').click();
   await b.locator('#modeHost').click();await b.locator('#hostCreate').click();await b.waitForFunction(()=>!document.querySelector('#createInvitation').disabled);
   await b.locator('#hostCallMic').click();await b.waitForFunction(()=>window.voice.active && window.voice.host && window.voice.self==='host');await b.locator('#hostEnd').click();
-  console.log('PASS: three local apps; decline, missing driver and cancelled preparation keep game running; Make host and switch back; existing voice/camera PCs and capture tracks preserved; session chat survives both host switches; old capture stopped; new source explicit; multiple controllers rerouted; old host joins; desktop permission reset; custom keyboard button/stick delivered; Switch labels and phone editor.');
+  console.log(`PASS: ${sameLocalApp?'two windows using one local app and a third remote guest':'three separate local apps'}; decline and cancellation; host switch and switch back; voice, camera and chat continuity; screen and controller routing.`);
 }catch(error){for(const [i,p] of pages.entries())console.log(`Page ${i}`,await p.evaluate(()=>({mode:document.body.dataset.mode,status:document.querySelector('#handoffStatus').textContent,host:document.querySelector('#hostStatus').textContent,client:document.querySelector('#clientStatus').textContent,phase:window.handoff?.state?.phase,peers:window.handoff?.state?.committed?.size})).catch(()=>({})));console.log('Browser errors',errors);throw error;
 }finally{await browser?.close();for(const app of apps)await app.close();}

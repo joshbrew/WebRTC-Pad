@@ -12,13 +12,23 @@ export function rememberControls(root,prefix,fields){
   }
 }
 export function restoreDevice(select,name){const value=readPreference(name,select.value);if(typeof value==='string' && [...select.options].some(o=>o.value===value))select.value=value;}
-export function guestCaption({state,count=0,detected=0,enabled=true,wantsController=true,setupRequired=false}){
+export function guestCaption({state,count=0,detected=0,enabled=true,wantsController=true,setupRequired=false,needsMapping=0,pending=0,error=false}){
   if(state==='new')return 'Waiting for reply';
   if(state==='disconnected')return 'Reconnecting · player spots kept';
   if(state==='failed')return 'Connection lost';
   if(state!=='connected')return state==='closed'?'Disconnected':'Connecting…';
-  if(!count)return !wantsController?'Watching':setupRequired?'Guest controller setup needed':!enabled?'Controller sharing paused':detected?`${detected} controller${detected===1?'':'s'} detected · not joined`:'Waiting for a controller';
-  return `${count} controller${count===1?'':'s'} ${enabled?'playing':'paused'}`;
+  if(!count){
+    if(error)return 'Host controller setup needed';
+    if(!wantsController)return 'Watching';
+    if(setupRequired)return 'Guest controller setup needed';
+    if(!enabled)return 'Controller sharing paused';
+    if(pending)return 'Controller joining…';
+    if(needsMapping && needsMapping===detected)return needsMapping===1?'Controller needs mapping':`${needsMapping} controllers need mapping`;
+    if(detected)return `${detected} controller${detected===1?'':'s'} detected · ${needsMapping?`${needsMapping} to map`:'not joined'}`;
+    return 'Waiting for a controller';
+  }
+  const joined=`${count} controller${count===1?'':'s'} ${enabled?'joined':'paused'}`;
+  return enabled && needsMapping?`${joined} · ${needsMapping} to map`:joined;
 }
 export function mediaCaption({camera=false,mic=false,voice=false}={}){
   return `${camera===true?'Camera sharing':'Camera off'} · ${mic===true?'Mic on':voice===true?'Mic muted':'Mic off'}`;
@@ -84,28 +94,40 @@ export function addControllerTest(item){
   const test=node('details',null,'pad-live-test'),summary=node('summary','Test');test.append(summary);
   test.innerHTML+='<div class="pad-live-body">'+PAD_SVG+'<p class="small muted" data-pad-reading aria-live="polite">Press buttons or move sticks to test.</p></div>';
   item.append(test);
+  return test;
 }
 const liveTestElements=new WeakMap();
+const padButtons=['a','b','x','y','lb','rb','lt','rt','back','start','ls','rs','up','down','left','right','guide'];
+export function paintControllerState(test,state,message){
+  const axes=state?.axes || {},buttons=state?.buttons || {};
+  paintControllerTest(test,state?{
+    axes:[axes.lx,-axes.ly,axes.rx,-axes.ry],
+    buttons:padButtons.map(key=>({pressed:buttons[key]===true,value:key==='lt' || key==='rt'?Number(axes[key]) || 0:0}))
+  }:null,message);
+}
 export function updateLiveTests(root,rows,pads,keyboard){
   if(document.hidden || !root.getClientRects().length)return;
   for(const item of root.querySelectorAll('.connected-controller')){
     const test=item.querySelector('.pad-live-test');if(!test?.open)continue;
-    let elements=liveTestElements.get(test);if(!elements){elements={buttons:[...test.querySelectorAll('[data-button]')],sticks:[...test.querySelectorAll('[data-stick]')],lines:[...test.querySelectorAll('[data-stick-line]')],triggers:[...test.querySelectorAll('[data-trigger]')],reading:test.querySelector('[data-pad-reading]')};liveTestElements.set(test,elements);}
     const row=rows.find(r=>r.id===item.dataset.controllerId),pad=row?.pad?pads.find(p=>p?.index===row.pad.index && p.id===row.pad.id):null;
     const state=row?.id==='keyboard'?keyboard:null;
+    paintControllerTest(test,pad,state?'Keyboard test: focus the picture and press your mapped keys.':undefined);
+  }
+}
+export function paintControllerTest(test,pad,message){
+    let elements=liveTestElements.get(test);if(!elements){elements={buttons:[...test.querySelectorAll('[data-button]')],sticks:[...test.querySelectorAll('[data-stick]')],lines:[...test.querySelectorAll('[data-stick-line]')],triggers:[...test.querySelectorAll('[data-trigger]')],reading:test.querySelector('[data-pad-reading]')};liveTestElements.set(test,elements);}
     const pressed=[];
     for(const el of elements.buttons){const index=Number(el.dataset.button),active=pad?.buttons[index]?.pressed===true || (pad?.buttons[index]?.value || 0)>.1;el.classList.toggle('is-pressed',active);if(active)pressed.push(PAD_NAMES[index] || `Button ${index+1}`);}
     for(const el of elements.triggers){const value=Math.max(0,Math.min(1,pad?.buttons[Number(el.dataset.trigger)]?.value || 0)).toFixed(2);if(el.style.getPropertyValue('--v')!==value)el.style.setProperty('--v',value);}
     for(const el of elements.sticks){
-      const i=Number(el.dataset.stick),x=Math.max(-1,Math.min(1,pad?.axes[i*2] || 0)),y=Math.max(-1,Math.min(1,pad?.axes[i*2+1] || 0));
+      const i=Number(el.dataset.stick),x=Math.max(-1,Math.min(1,Number(pad?.axes[i*2]) || 0)),y=Math.max(-1,Math.min(1,Number(pad?.axes[i*2+1]) || 0));
       const cx=Number(el.dataset.cx || (i?151:88))+x*10,cy=Number(el.dataset.cy || 81)+y*10;
       for(const [name,value] of [['cx',cx.toFixed(1)],['cy',cy.toFixed(1)]])if(el.getAttribute(name)!==value)el.setAttribute(name,value);
       el.classList.toggle('is-moved',Math.hypot(x,y)>.15);
       const line=elements.lines[i];if(line){line.setAttribute('x2',cx.toFixed(1));line.setAttribute('y2',cy.toFixed(1));}
     }
-    const text=state?'Keyboard test: focus the picture and press your mapped keys.':pad?pressed.length?`Pressed: ${pressed.join(', ')}`:'Move sticks or press a button.':'Controller disconnected.';
+    const text=message || (pad?pressed.length?`Pressed: ${pressed.join(', ')}`:'Move sticks or press a button.':'Controller disconnected.');
     const reading=elements.reading;if(reading.textContent!==text)reading.textContent=text;
-  }
 }
 export function initCallComfort({getState,voice,showSettings,notify,report,refreshPicture,onInputFocus=()=>{}}){
   const roots=new Map();let previous=null,feedbackReady=false,context,previousMic=new Map(),lastJoined=0;
@@ -118,17 +140,31 @@ export function initCallComfort({getState,voice,showSettings,notify,report,refre
   function focus(id){if(id==='hostSourceSetup' && !$('#hostAudioOnly').checked)id=$('#captureBackend').value==='native'?'captureTarget':'chooseBrowserSource';const el=$(`#${id}`);if(!el)return;document.dispatchEvent(new CustomEvent('reveal-call-setting',{detail:el}));if(el.closest('.call-sheet') && !el.closest('.call-sheet').open)showSettings(document.body.dataset.mode || 'host');for(let p=el.parentElement;p;p=p.parentElement)if(p.tagName==='DETAILS')p.open=true;el.scrollIntoView({block:'center',behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth'});if(!el.matches('button,input,select,textarea,a'))el.tabIndex=-1;el.focus({preventScroll:true});if(['clientCallControllers','joinFocus','chooseBrowserSource'].includes(id))el.click();else if(id==='captureTarget')try{el.showPicker?.();}catch{/* Focus remains on the source selector. */}}
   for(const side of ['host','client']){
     const root=node('div',null,'call-preflight');root.id=`${side}Preflight`;root.setAttribute('aria-label','Controller setup');root.hidden=true;
-    if(side==='host')$('#hostCreate').after(root);else $('#clientPairing').after(root);roots.set(side,root);
+    if(side==='host')$('.host-setup-header').after(root);else $('#clientPairing').after(root);roots.set(side,root);
     if(side==='host'){const invite=root.cloneNode();invite.id='hostInvitePreflight';$('#hostInviteCard').prepend(invite);}
     const settings=$(`#${side}SettingsSheet .call-sheet-content`),options=node('div',null,'comfort-options');
     const check=node('label',null,'check-row'),checkbox=node('input');checkbox.type='checkbox';checkbox.checked=readPreference('callSounds',true);checkbox.id=`${side}CallSounds`;check.append(checkbox,document.createTextNode(' Join and leave sounds'));options.append(check);
     checkbox.onchange=()=>{writePreference('callSounds',checkbox.checked);for(const el of document.querySelectorAll('[id$=CallSounds]'))el.checked=checkbox.checked;if(checkbox.checked){wake();tone();}};
     const sound=node('button','Play test sound','button small-button');sound.id=`${side}TestSound`;sound.type='button';sound.onclick=async()=>{try{const ac=audioContext();await ac.resume();const gain=ac.createGain(),osc=ac.createOscillator(),now=ac.currentTime;gain.gain.setValueAtTime(.07,now);gain.gain.exponentialRampToValueAtTime(.001,now+.35);osc.frequency.value=660;osc.connect(gain).connect(ac.destination);osc.start();osc.stop(now+.35);osc.onended=()=>{osc.disconnect();gain.disconnect();};notify('Test sound played through the browser’s output.');}catch{notify('Sound is blocked. Allow sound in your browser and try again.');}};options.append(sound);settings.querySelector('[data-settings-pane=voice]').append(options);
-    const meter=node('div',null,'voice-meter'),label=node('label','Microphone level'),bar=node('meter');bar.min=0;bar.max=1;bar.value=0;bar.id=`${side}MicLevel`;bar.dataset.micLevel='true';label.htmlFor=bar.id;meter.append(label,bar);voice(side).root.querySelector('.voice-actions').after(meter);
-
   }
-  const recovery=node('div',null,'call-reconnecting');const recoveryText=node('span'),recoveryHelp=node('button','Open a new invite','button small-button');recoveryHelp.onclick=()=>$('#joinFocus').click();recovery.append(recoveryText,recoveryHelp);recovery.id='callReconnecting';recovery.hidden=true;recovery.setAttribute('role','status');$('#clientStage').append(recovery);
-  document.addEventListener('call-recovery',event=>{const state=event.detail;recovery.hidden=state==='connected' || state==='closed';recoveryHelp.hidden=state!=='expired';const hosted=document.body.dataset.sessionInvites==='true' && document.body.dataset.sessionGuestFiles!=='true';recoveryHelp.textContent=hosted?'Join again':'Open a new invite';recoveryText.textContent=state==='expired'?'Connection lost. Rejoin to continue.':'Reconnecting… Controllers are paused; player spots are kept.';});
+  const recovery=node('div',null,'call-reconnecting');
+  const recoveryText=node('span'),recoveryHelp=node('button','Use a new invite','button small-button');
+  recoveryText.setAttribute('role','status');
+  recoveryHelp.type='button';
+  recoveryHelp.onclick=()=>document.dispatchEvent(new CustomEvent('reopen-invite',{detail:recoveryHelp}));
+  recovery.append(recoveryText,recoveryHelp);recovery.id='callReconnecting';recovery.hidden=true;
+  $('#clientStage').append(recovery);
+  document.addEventListener('call-recovery',event=>{
+    const {detail:state}=event;
+    const hadFocus=document.activeElement===recoveryHelp;
+    recovery.hidden=state!=='waiting' && state!=='expired';
+    recovery.dataset.state=state;
+    recoveryHelp.hidden=state!=='expired';
+    recoveryHelp.textContent=getState().links?'Rejoin session':'Use a new invite';
+    const message=state==='expired'?'Connection lost':state==='waiting'?'Reconnecting…':'';
+    if(recoveryText.textContent!==message)recoveryText.textContent=message;
+    if(recovery.hidden && hadFocus)$('#clientStage').focus({preventScroll:true});
+  });
   const trouble=node('dialog');trouble.id='callTroubleshooting';trouble.className='comfort-help';trouble.innerHTML='<div class="section-heading"><h2>Having trouble?</h2><button class="help-button" data-help="close" aria-label="Close help">×</button></div><div class="trouble-choices" role="group" aria-label="What needs fixing?"><button class="button" data-topic="connection">Connection</button><button class="button" data-topic="picture">Picture &amp; sound</button><button class="button" data-topic="controls">Controls</button></div><p data-help="advice"></p><div class="row"><button class="button secondary" data-help="fix">Open settings</button><button class="button small-button" data-help="save">Save diagnostic file</button></div><p class="small muted">The file excludes addresses, connection secrets, device names, messages and input contents.</p>';
   document.body.append(trouble);for(const type of ['pointerdown','pointermove','pointerup','wheel','keydown','keyup'])trouble.addEventListener(type,event=>event.stopPropagation());trouble.addEventListener('focusin',onInputFocus);let topic='connection';
   function help(next=topic){topic=next;const state=getState(),connected=state.side==='host'?state.guests>0:state.connected,pairing=state.links?'Send the session link and approve the guest’s request.':'Send the invite, then open the guest’s reply on the host.';for(const button of trouble.querySelectorAll('[data-topic]'))button.setAttribute('aria-pressed',String(button.dataset.topic===topic));
@@ -139,15 +175,7 @@ export function initCallComfort({getState,voice,showSettings,notify,report,refre
   function openHelp(){help();if(!trouble.open){onInputFocus();trouble.showModal();}}
   for(const side of ['host','client']){const button=node('button','Having trouble?','button small-button');button.id=`${side}Troubleshoot`;button.onclick=openHelp;$(`#${side}SettingsSheet .call-settings-footer`).append(button);}
   const guideHelp=node('button','Having trouble?','button small-button');guideHelp.onclick=()=>{$('#closeHelp').click();openHelp();};$('#helpDialog .tour-footer').append(guideHelp);
-  document.addEventListener('fullscreenchange',()=>{if(document.fullscreenElement===$('#clientStage'))$('#clientStage').append(trouble);else document.body.append(trouble);});
-  let metered=new Map();
-  function stopMeter(side){const meter=metered.get(side);if(meter){meter.source.disconnect();meter.analyser.disconnect();metered.delete(side);}voice(side).root.querySelector('[data-mic-level]').value=0;}
-  function updateMeters(){
-    for(const side of ['host','client']){const room=voice(side),bar=room.root.querySelector('[data-mic-level]'),visible=!document.hidden && room.root.getClientRects().length && room.mic && !room.muted;
-      if(!visible){stopMeter(side);continue;}
-      try{const stream=room.mic;let meter=metered.get(side);if(meter?.stream!==stream){stopMeter(side);const ac=audioContext();if(ac.state!=='running')continue;const source=ac.createMediaStreamSource(stream),analyser=ac.createAnalyser();analyser.fftSize=256;source.connect(analyser);meter={stream,source,analyser,data:new Uint8Array(256)};metered.set(side,meter);}meter.analyser.getByteTimeDomainData(meter.data);bar.value=Math.min(1,Math.sqrt(meter.data.reduce((sum,n)=>sum+((n-128)/128)**2,0)/meter.data.length)*3);}catch{stopMeter(side);}
-    }
-  }
+  document.addEventListener('fullscreenchange',()=>{const stage=document.fullscreenElement;const parent=stage?.matches('.video-stage')?stage:document.body;if(trouble.parentElement!==parent)parent.append(trouble);});
   function refresh(){
     if(document.hidden)return;const state=getState();
     // Show only actionable setup problems; optional media is chosen in its source controls.
@@ -160,11 +188,11 @@ export function initCallComfort({getState,voice,showSettings,notify,report,refre
     const people=state.guests || 0,joined=state.joined || 0;if(feedbackReady && previous?.hosting && state.hosting && people!==previous.guests){tone(people>previous.guests?'join':'leave');notify(people>previous.guests?'Guest connected':'Guest left');}
     if(feedbackReady && joined>lastJoined){notify(`${joined} controller${joined===1?'':'s'} ready to play`);document.body.classList.remove('controller-joined');requestAnimationFrame(()=>document.body.classList.add('controller-joined'));}
     if(feedbackReady && previous?.side===state.side && state.side==='client' && previous.connected!==state.connected){tone(state.connected?'join':'leave');}
-    for(const side of ['host','client']){const room=voice(side),bar=room.root.querySelector('[data-mic-level]');bar.id=`${side}MicLevel`;room.root.querySelector('.voice-meter label').htmlFor=bar.id;const on=!!room.mic && !room.muted;if(previousMic.has(side) && previousMic.get(side)!==on && room.ready)notify(on?'Microphone on':'Microphone muted');previousMic.set(side,on);}
+    for(const side of ['host','client']){const room=voice(side),on=!!room.mic && !room.muted;if(previousMic.has(side) && previousMic.get(side)!==on && room.ready)notify(on?'Microphone on':'Microphone muted');previousMic.set(side,on);}
     feedbackReady=true;previous={...state,guests:people};lastJoined=joined;
   }
-  const timer=setInterval(refresh,1000),meterTimer=setInterval(updateMeters,100);document.addEventListener('visibilitychange',()=>{if(document.hidden)for(const side of ['host','client'])stopMeter(side);else refresh();});
-  window.addEventListener('pagehide',()=>{clearInterval(timer);clearInterval(meterTimer);for(const side of ['host','client'])stopMeter(side);context?.close().catch(()=>{});});refresh();
+  const timer=setInterval(refresh,1000);document.addEventListener('visibilitychange',refresh);
+  window.addEventListener('pagehide',()=>{clearInterval(timer);context?.close().catch(()=>{});});refresh();
   return {refresh,openHelp};
 }
 

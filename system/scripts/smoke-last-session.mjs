@@ -29,16 +29,27 @@ try{
   await page.locator('#hostScreenLimits [data-screen-limit=bitrate]').evaluate(el=>{el.value='4000000';el.dispatchEvent(new Event('change',{bubbles:true}));});
   await page.reload();await page.waitForFunction(()=>document.querySelector('#captureTarget').value==='123');assert.equal(await page.locator('#nativeCaptureAudio').isChecked(),true);assert.equal(await page.locator('#hostAllowGuestVideo').isChecked(),true);assert.equal(nativeStarts,0);
   assert.equal(await page.locator('#hostCameraLimits [data-call-limit=height]').inputValue(),'480');assert.equal(await page.locator('#hostScreenLimits [data-screen-limit=bitrate]').inputValue(),'4000000');
+  await page.locator('#hostCreate').click();
+  await page.waitForFunction(()=>document.querySelector('#hostPanel').dataset.session==='active');
+  assert.equal(await page.locator('#hostLiveText').textContent(),'Not sharing yet');
+  assert.equal([...app.rooms.values()][0].native,undefined,'A remembered native source stays private');
+  await page.locator('#hostEnd').click();
+  await page.waitForFunction(()=>!document.querySelector('#hostSetupCard').hidden);
   await page.locator('#modeClient').click();await page.reload();await page.waitForFunction(()=>document.body.dataset.mode==='client');
   await page.goto(origin+'/?mode=host');await page.waitForFunction(()=>document.body.dataset.mode==='host');await page.goto(origin);assert.equal(await page.locator('body').getAttribute('data-mode'),'host');
   sourceAvailable=false;await page.reload();await page.waitForFunction(()=>document.querySelector('#hostLastSourceNote').textContent.includes('Remembered game'));assert.equal(await page.locator('#captureTarget').inputValue(),'none');assert.equal(nativeStarts,0);
-  await page.locator('#hostCreate').evaluate(el=>{el.disabled=true;});await page.waitForFunction(()=>document.querySelector('#hostCreateTop').disabled);await page.locator('#hostCreate').evaluate(el=>{el.disabled=false;});await page.waitForFunction(()=>!document.querySelector('#hostCreateTop').disabled);
-  await page.locator('#hostLastSourceNote button').click();await page.locator('#hostCreateTop').click();await page.waitForFunction(()=>document.querySelector('#hostPanel').dataset.session==='active');assert.equal(app.rooms.size,1);assert.equal(nativeStarts,0);await page.locator('#hostEnd').click();await page.waitForFunction(()=>!document.querySelector('#hostSetupCard').hidden);
+  await page.locator('#hostLastSourceNote button').click();await page.locator('#hostCreate').click();await page.waitForFunction(()=>document.querySelector('#hostPanel').dataset.session==='active');assert.equal(app.rooms.size,1);assert.equal(nativeStarts,0);await page.locator('#hostEnd').click();await page.waitForFunction(()=>!document.querySelector('#hostSetupCard').hidden);
   await page.evaluate(key=>localStorage.setItem(key,JSON.stringify({version:1,fields:{captureBackend:'browser',nativeCaptureAudio:false,streamResolution:'720',streamFramerate:'30',hostAllowGuestMic:false},source:{kind:'browser',label:'Last browser screen'}})),lastSessionKey);
   await page.goto(origin);await page.waitForFunction(()=>document.querySelector('#hostLastSourceNote').textContent.includes('Last browser screen'));assert.equal(await page.evaluate(()=>window.sharePrompts),0);
-  await page.locator('#hostCreateTop').click();await page.waitForFunction(()=>document.querySelector('#hostPanel').dataset.session==='active');await page.waitForFunction(()=>!!document.querySelector('#hostPreview').srcObject);assert.equal(await page.evaluate(()=>window.sharePrompts),1,'Start reopens the browser picker once');
+  await page.locator('#hostCreate').click();await page.waitForFunction(()=>document.querySelector('#hostPanel').dataset.session==='active');
+  assert.equal(await page.locator('#hostLiveText').textContent(),'Not sharing yet');
+  assert.equal(await page.evaluate(()=>window.sharePrompts),0,'Starting with a remembered browser source skips the picker');
+  await page.locator('#hostInviteSheet .help-button').click();
+  await page.locator('#hostCapture').click();
+  await page.waitForFunction(()=>document.querySelector('#hostLiveText').textContent==='Screen is live');
+  assert.equal(await page.evaluate(()=>window.sharePrompts),1,'Share screen opens the picker during the call');
   assert.equal(await page.locator('#hostAllowGuestMic').isChecked(),false);await page.locator('#hostEnd').click();await page.waitForFunction(()=>!document.querySelector('#hostSetupCard').hidden);
-  for(const width of [390,860,1366]){await page.setViewportSize({width,height:850});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);assert.equal(await page.locator('#hostCreateTop').isVisible(),true);}
+  for(const width of [390,860,1366]){await page.setViewportSize({width,height:850});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);assert.equal(await page.locator('#hostCreate').isVisible(),true);}
   await page.setViewportSize({width:1366,height:900});await fs.mkdir('.local/screenshots',{recursive:true});await page.screenshot({path:'.local/screenshots/remembered-session-setup.png'});
-  assert.deepEqual(errors,[]);console.log('PASS: automatic setup memory, crop safety, no capture on load, last Host/Join page, explicit page links, missing sources, synchronized top Start, browser re-pick on Start and responsive header.');
+  assert.deepEqual(errors,[]);console.log('PASS: remembered native and browser sources stay off on Start; explicit browser sharing works during the call; crop safety, setup memory, and responsive header.');
 }finally{await browser?.close();await app.close();}

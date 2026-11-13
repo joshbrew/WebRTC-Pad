@@ -47,7 +47,7 @@ try{for(const fixture of cases.filter(value=>!process.env.TEST_CONTROLLER_CASE |
       assert.equal(slots.size,1,'Explicit preselection joins without a fresh button press or native driver');
       await guest.evaluate(()=>window.pad.buttons[1]={pressed:true,value:1});const deadline=Date.now()+6000;while(!writes.some(s=>s.buttons.b)){if(Date.now()>deadline)throw Error('Browser fallback did not deliver input');await new Promise(r=>setTimeout(r,20));}
       await guest.locator('#controllersSheet').evaluate(el=>el.open=true);await guest.getByRole('button',{name:'Stop using PS4 Controller',exact:true}).click();await guest.waitForFunction(()=>!document.querySelector('#connectedControllers [data-in-use=true]'));
-      await guest.getByRole('button',{name:'Select PS4 Controller',exact:true}).click();await guest.waitForFunction(()=>document.querySelector('#connectedControllers [data-in-use=true]'));
+      await guest.getByRole('button',{name:'Join PS4 Controller',exact:true}).click();await guest.waitForFunction(()=>document.querySelector('#connectedControllers [data-in-use=true]'));
     }
     assert.equal(starts,0,'Unavailable isolation must never be attempted');assert.equal(await guest.locator('#clientVideo').evaluate(el=>el.srcObject===null),true);
     assert.deepEqual(errors,[]);console.log(`PASS: ${fixture.name}: selected controller survives connection; automatic browser fallback, clear local-input notice, and explicit host error reporting.`);

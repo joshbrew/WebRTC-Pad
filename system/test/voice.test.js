@@ -35,6 +35,10 @@ test('a reconnect waits for the new host microphone policy before sharing prepar
 });
 
 test('cancelling a pending microphone keeps an active voice call listening',()=>{
-  let stopped=0,synced=0,announced=0;const room=Object.assign(Object.create(VoiceRoom.prototype),{active:true,micBusy:true,mic:{getTracks:()=>[{stop(){stopped++;}}]},peers:new Map([['host',{}]]),syncSender:async()=>{synced++;},announce(){announced++;},status(){},render(){}});
-  room.cancelMic();assert.equal(room.active,true);assert.equal(room.mic,null);assert.equal(room.micBusy,false);assert.equal(room.muted,true);assert.equal(stopped,1);assert.equal(synced,1);assert.equal(announced,1);assert.equal(room.peers.size,1);
+  let stopped=0,synced=0,announced=0;
+  const input={getTracks:()=>[{stop(){stopped++;}}]};
+  const controls={level:{value:.5},'mic-gain':{disabled:true}};
+  const room=Object.assign(Object.create(VoiceRoom.prototype),{active:true,micBusy:true,mic:input,micInput:input,$:name=>controls[name],peers:new Map([['host',{}]]),syncSender:async()=>{synced++;},announce(){announced++;},status(){},render(){}});
+  room.cancelMic();assert.equal(room.active,true);assert.equal(room.mic,null);assert.equal(room.micInput,null);assert.equal(room.micBusy,false);assert.equal(room.muted,true);assert.equal(stopped,1);assert.equal(synced,1);assert.equal(announced,1);assert.equal(room.peers.size,1);
+  assert.equal(controls.level.value,0);assert.equal(controls['mic-gain'].disabled,false);
 });

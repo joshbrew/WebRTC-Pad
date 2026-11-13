@@ -1,3 +1,5 @@
+import {videoContentHint} from './media.js';
+
 // A browser may support either the standard millisecond target or Chromium's
 // older seconds hint. Each is optional and must never interrupt track setup.
 export function preferLowLatency(receiver) {
@@ -34,25 +36,29 @@ export async function applySenderQuality(peer) {
   await prioritizeAudio(peer.senders.audio);
   const sender = peer.senders.video;
   if (!sender?.track) return;
-  const params = sender.getParameters();
-  if (!params.encodings?.length) return; // Tuning becomes available after negotiation.
   const source = sender.track.getSettings?.() || {};
   const scale = peer.quality?.width && source.width && source.height ? Math.max(1, source.width / peer.quality.width, source.height / peer.quality.height) : 1;
-  for (const encoding of params.encodings) {
-    encoding.maxBitrate = peer.quality?.maxBitrate || 8000000;
-    encoding.maxFramerate = peer.quality?.frameRate || 60;
-    encoding.scaleResolutionDownBy = scale;
-    encoding.priority='high';encoding.networkPriority='high';
-  }
-  // Spatial adaptation belongs to our floor/cooldown policy. Let the browser
-  // reduce bitrate/frame rate under pressure, rather than resize underneath it.
-  params.degradationPreference = peer.quality?.minHeight || peer.quality?.autoThrottle === false || peer.quality?.priority === 'resolution' ? 'maintain-resolution' : peer.quality?.priority === 'balanced' ? 'balanced' : 'maintain-framerate';
-  try { await sender.setParameters(params); } catch {
-    // Unsupported priority/degradation hints must not discard the actual
-    // bitrate, frame-rate and scale limits on another browser/platform.
-    delete params.degradationPreference;
-    for(const encoding of params.encodings){delete encoding.priority;delete encoding.networkPriority;}
-    try{await sender.setParameters(params);}catch{/* Capture constraints remain the final fallback. */}
+  const apply=async ({priority,degradation})=>{
+    const params=sender.getParameters();
+    if(!params.encodings?.length)return;
+    for(const encoding of params.encodings){
+      encoding.maxBitrate=peer.quality?.maxBitrate || 8000000;
+      encoding.maxFramerate=peer.quality?.frameRate || 60;
+      encoding.scaleResolutionDownBy=scale;
+      if(priority){encoding.priority=peer.videoPriority || 'high';encoding.networkPriority=encoding.priority;}
+    }
+    if(degradation){
+      const quality=peer.quality;
+      // With an app-controlled resolution floor, let the app choose when to scale.
+      params.degradationPreference=quality?.minHeight || quality?.autoThrottle===false || quality?.priority==='resolution'?'maintain-resolution':quality?.priority==='balanced'?'balanced':'maintain-framerate';
+    }
+    await sender.setParameters(params);
+  };
+  try{await apply({priority:true,degradation:true});}
+  catch{
+    // Preserve the resolution policy if only a priority hint was rejected.
+    try{await apply({degradation:true});}
+    catch{try{await apply({});}catch{/* Capture constraints remain the fallback. */}}
   }
 }
 export async function replaceCapture(peer, stream) {
@@ -60,12 +66,15 @@ export async function replaceCapture(peer, stream) {
     const sender = peer.senders[kind];
     if (!sender) continue; // The viewer's offer has not arrived yet.
     const track = stream?.getTracks().find(t => t.kind === kind && t.readyState !== 'ended') || null;
-    if(stream){if(kind==='audio')sender.setStreams();else sender.setStreams(stream);}
-    await sender.replaceTrack(track);
+    if(sender.track!==track || kind==='video' && peer.outboundStream!==stream){
+      if(stream){if(kind==='audio')sender.setStreams();else sender.setStreams(stream);}
+      await sender.replaceTrack(track);
+    }
     if (track?.kind === 'video') {
-      track.contentHint = peer.quality?.priority === 'resolution' ? 'detail' : 'motion';
+      track.contentHint = videoContentHint(peer.quality);
       await applySenderQuality(peer);
     }
     if(track?.kind==='audio')await prioritizeAudio(sender);
   }
+  peer.outboundStream=stream;
 }

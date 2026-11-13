@@ -138,8 +138,13 @@ export class FileTransfers {
 export function chatAttachments(chat) {
   const icon = name => `<svg class="icon" aria-hidden="true"><use href="#i-${name}"/></svg>`;
   const area = document.createElement('div'); area.className = 'chat-attachments';
-  area.innerHTML = `<div class="chat-attachment-tools"><button type="button" class="button small-button" data-file="add" title="Share a file · up to 64 MB">${icon('attach')} File</button><button type="button" class="button small-button" data-file="clipboard" hidden>${icon('copy')} Send clipboard</button><label class="check-row chat-upload-pause"><input type="checkbox" data-file="pause" /> Pause uploads</label></div><input type="file" data-file="picker" hidden /><div data-file="list" class="chat-file-list"></div><p class="small muted" data-file="note" role="status"></p>`;
-  chat.root.querySelector('.chat-compose').before(area); const $ = name => area.querySelector(`[data-file="${name}"]`);
+  area.innerHTML = `<div class="chat-attachment-tools"><button type="button" class="button small-button" data-file="clipboard" hidden>${icon('copy')} Send clipboard</button><label class="check-row chat-upload-pause"><input type="checkbox" data-file="pause" /> Pause uploads</label></div><input type="file" data-file="picker" hidden /><div data-file="list" class="chat-file-list"></div><p class="small muted" data-file="note" role="status"></p>`;
+  chat.root.querySelector('.chat-empty').before(area); const $ = name => area.querySelector(`[data-file="${name}"]`);
+  const attach = document.createElement('button');
+  attach.type = 'button'; attach.className = 'button small-button chat-attach'; attach.dataset.file = 'add';
+  attach.disabled = true; attach.title = 'Attach a file · up to 64 MB';
+  attach.setAttribute('aria-label', 'Attach a file'); attach.innerHTML = icon('attach');
+  chat.$('send').before(attach);
   const noticed = new Set();
   const hub = new FileTransfers({ host: chat.host, changed: () => render(), clipboard: ({ text, author }) => {
     const row = document.createElement('div'); row.className = 'chat-file chat-clipboard'; row.dataset.clipboard = 'true';
@@ -157,7 +162,7 @@ export function chatAttachments(chat) {
     chat.onOpen?.();
   } });
   function render() {
-    $('add').disabled = !chat.ready || chat.locked || !hub.policy.files || !hub.links.size;
+    attach.disabled = !chat.ready || chat.locked || !hub.policy.files || !hub.links.size;
     $('clipboard').hidden = !hub.policy.clipboard; $('clipboard').disabled = !chat.ready || chat.locked || !hub.links.size;
     if (!hub.offers.size) noticed.clear();
     if (!chat.ready || !hub.policy.clipboard) for (const row of $('list').querySelectorAll('[data-clipboard]')) row.remove();
@@ -199,7 +204,7 @@ export function chatAttachments(chat) {
     }
     for (const row of existing.values()) row.remove();
   }
-  $('add').onclick = () => $('picker').click();
+  attach.onclick = () => $('picker').click();
   $('picker').onchange = () => { const file = $('picker').files[0]; if (file) try { hub.offer(file); $('note').textContent = 'Shared with this call · up to 64 MB per file.'; } catch (error) { $('note').textContent = error.message; } $('picker').value = ''; };
   $('pause').onchange = () => { hub.paused = $('pause').checked; };
   $('clipboard').onclick = async () => { try { hub.shareClipboard(await navigator.clipboard.readText()); $('note').textContent = 'Clipboard shared. Others can choose Copy.'; } catch (error) { $('note').textContent = error.message; } };

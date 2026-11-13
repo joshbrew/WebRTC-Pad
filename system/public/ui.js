@@ -2,7 +2,7 @@ import {initMobileNavigation,revealMobileTarget} from './mobile-navigation.js';
 import {filePairingBrowserHint} from './pairing.js';
 const $ = selector => document.querySelector(selector);
 let sessionActive = false, sharing = false, hostPairState = 'idle', playerState = 'idle', hasVideo = false, toastTimer;
-let inviteSaved=false, replySaved=false, hostNextTarget='createInvitation';
+let inviteSaved=false, replySaved=false, replyCopied=false, hostNextTarget='createInvitation';
 let clientWasConnected=false;
 const icon = name => `<svg class="icon" aria-hidden="true"><use href="#i-${name}"/></svg>`;
 const refreshQuickStart = () => document.dispatchEvent(new CustomEvent('quick-start', {detail:'refresh'}));
@@ -38,29 +38,29 @@ function sessionFlowUI() {
   const hostedInvites=document.body.dataset.sessionInvites==='true',files=!hostedInvites || document.body.dataset.sessionGuestFiles==='true';
   browserNote.textContent=filePairingBrowserHint(navigator.userAgent,hostedInvites);browserNote.hidden=!browserNote.textContent || !files || playerState==='connected';
   $('#hostSetupTitle').textContent=sessionActive?'Your session is running':'Start a session';
-  $('#hostSetupIntro').hidden=sessionActive;
   $('#hostNextStep').hidden=!sessionActive;
   if(sessionActive)$('#hostStartStatus').textContent='Session ready. Keep this page open while you play.';
+  const waitingReplies=Number($('#hostInviteCard').dataset.pending || 0);
   let next;
   if(document.body.dataset.sessionInvites==='true' && document.body.dataset.sessionHostFiles!=='true'){
     const ready=!!$('#sessionShareLink')?.value;
     next=document.body.dataset.sessionOnline!=='true'?['Reconnect invitations','Go online to invite more people. Existing game connections can keep running.','Go online','sessionConnect']:Number($('#peopleCount').textContent)>1?['Check the guest controllers','Ask guests to press a button on each controller, then assign their gamepads in your game.','Check controllers','players']:ready?['Invite your guests','Copy the session link, or send a direct invite to someone online. Accept each link request below.','Copy invite link','sessionCopyLink']:['Invite your guests','Create a session link or send a direct invite.','Create invite link','sessionCreateLink'];
   }
-  else if(hostPairState==='generating')next=['Making your invite','Keep this page open while the invite is prepared.','Making invite…','createInvitation'];
-  else if(hostPairState==='ready' && !inviteSaved)next=$('#hostInviteCard').dataset.transfer==='text'?['Send the invite','Copy the invite text and send it to your guest through your chat app.','Copy invite text','createInvitationText']:['Send the invite','Download the invite file and send it to your guest through your chat app.','Download invite file','createInvitation'];
-  else if(hostPairState==='ready' || Number($('#hostInviteCard').dataset.pending)>0)next=['Open your guest’s reply','Your guest sends a reply back. Open their file or paste their reply text to connect.','Open reply file','hostReplyFile'];
-  else if(hostPairState==='connected')next=['Check the guest controllers','Ask guests to join with their controllers, then assign their gamepads in your game.','Check controllers','players'];
+  else if(hostPairState==='generating')next=['Making your invite','','Making invite…','createInvitation'];
+  else if(hostPairState==='ready' && !inviteSaved)next=$('#hostInviteCard').dataset.transfer==='text'?['Send the invite','Paste the invite text into your chat.','Copy invite text','createInvitationText']:['Send the invite','Send the downloaded file to your guest.','Download invite file','createInvitation'];
+  else if(waitingReplies>0)next=[waitingReplies===1?'Open your guest’s reply':`Waiting for ${waitingReplies} replies`,'Drop a reply file anywhere on this page, or paste its text.','Open reply file','hostReplyFile'];
+  else if(hostPairState==='connected')next=['Check guest controllers','Ask each guest to press a button to join.','Check controllers','players'];
   else if(hostPairState==='expired')next=['Your invite expired','Create a new invite and send it to your guest.','New invite','newInvitation'];
-  else next=['Invite your guests','Send a file or copy the invite text. Use New invite for each additional computer.','Create invite file','createInvitation'];
+  else if(hostPairState==='cancelled')next=['Invite your guests','Create a new invite to share.','New invite','newInvitation'];
+  else next=['Invite your guests','Send an invite file or copy the invite text.','Create invite file','createInvitation'];
   const [title,note,label,target]=next;
+  $('#hostNextStep').dataset.action=target;
   $('#hostNextTitle').textContent=title;$('#hostNextNote').textContent=note;
   $('#hostNextAction').textContent=label;$('#hostNextAction').disabled=hostPairState==='generating';hostNextTarget=target;
-  if($('#hostNextInvite')){$('#hostNextInvite').disabled=hostPairState==='generating';$('#hostNextPasteReply').hidden=document.body.dataset.sessionInvites==='true' && document.body.dataset.sessionHostFiles!=='true' || !['ready','connected'].includes(hostPairState);}
+  if($('#hostNextInvite')){$('#hostNextInvite').hidden=target==='createInvitation' || target==='sessionCreateLink';$('#hostNextInvite').disabled=hostPairState==='generating';$('#hostNextPasteReply').hidden=target!=='hostReplyFile';}
   const connected=playerState==='connected', replyReady=!$('#downloadReply').disabled;
   const textReply=$('#clientPairing').dataset.transfer==='text';
-  $('#clientReplyStep .step-content > p').textContent=textReply?'Copy your reply text and send it to your friend. They paste it to connect you.':'Send the downloaded reply file to your friend. They open it to connect you.';
-  $('#clientInviteStep .step-content > p').textContent='Open a file or paste the invite text your host sends you.';
-  $('#clientPairing > .card-intro').textContent='Ask your host to send you an invite file or invite text.';
+  $('#clientReplyStep .step-content > p').textContent=textReply?'Copy the reply text or send it as a file. Keep this page open.':'Send the downloaded reply or copy its text. Keep this page open.';
   $('#downloadInvitation').innerHTML=`${icon('download')} ${inviteSaved?'Save invite again':'Save invite file'}`;
   $('#downloadReply').innerHTML=`${icon('download')} ${replySaved?'Save reply again':'Save reply file'}`;
   const audioOnly=$('#clientVideo').dataset.audioOnly==='true',receiveStream=$('#clientReceiveVideo').checked;
@@ -72,27 +72,39 @@ function sessionFlowUI() {
   $('#clientVideoToggle').closest('label').hidden=audioOnly || !receiveStream;
   $('#clientPopout').hidden=audioOnly;
   const waiting=!clientWasConnected && ['waiting','connecting'].includes(playerState) && replyReady;
-  $('#clientReplyAction').hidden=!waiting || document.body.dataset.sessionInvites==='true' && document.body.dataset.sessionGuestFiles!=='true';
-  $('#clientReplyAction').textContent=textReply?replySaved?'Copy reply again':'Copy reply text':replySaved?'Save reply again':'Save reply & send it back';
-  $('#clientReplyAction').classList.toggle('primary',!replySaved);
-  $('#clientReplyAction').classList.toggle('secondary',replySaved);
-  if(waiting) {
-    $('#clientStageTitle').textContent=replySaved?'Send your reply to the host':'Your reply is ready';
-    $('#clientStageNote').textContent=replySaved?'Send the saved file or copied text through your chat app. The host opens it to connect you. Keep this page open.':textReply?'Copy your reply text and send it back through your chat app. The host pastes it to connect you.':'Save your reply file and send it back through your chat app. The host opens it to connect you.';
+  const manualReply=waiting && files;
+  const panel=$('#clientPanel');
+  if(panel.dataset.replyReady!==String(manualReply))panel.dataset.replyReady=String(manualReply);
+  const exported=replyCopied || replySaved;
+  const primaryReply=$('#clientReplyAction'),alternateReply=$('#clientReplyAlternate');
+  primaryReply.hidden=!manualReply;
+  primaryReply.textContent=textReply?replyCopied?'Copy reply again':'Copy reply text':replySaved?'Save reply again':'Save reply file';
+  primaryReply.classList.toggle('primary',!exported);
+  primaryReply.classList.toggle('secondary',exported);
+  if(alternateReply){
+    alternateReply.hidden=primaryReply.hidden;
+    const label=textReply?replySaved?'Save reply again':'Save reply file':replyCopied?'Copy reply again':'Copy reply text';
+    if(alternateReply.textContent!==label)alternateReply.innerHTML=`${icon(textReply?'download':'copy')}<span>${label}</span>`;
   }
-  const step=connected?2:['idle','closed','failed'].includes(playerState)?0:replyReady?1:0;
+  if(manualReply) {
+    $('#clientStageTitle').textContent='Send your reply to the host';
+    $('#clientStageNote').textContent=replyCopied && replySaved?'Send the reply file or paste the copied text into your chat. Keep this page open.':replyCopied?'Paste the reply into your chat and keep this page open.':replySaved?'Send the downloaded reply and keep this page open. Your host can drop it onto the session window.':'Copy or save your reply, then send it to the host. Keep this page open.';
+  }
+  const step=connected?2:['idle','closed','failed','invite-expired'].includes(playerState)?0:replyReady?1:0;
   for(const [index,id] of ['joinStepInvite','joinStepReply','joinStepControls'].entries()) {
     const button=$(`#${id}`);
     if(index===step)button.setAttribute('aria-current','step');else button.removeAttribute('aria-current');
-    button.classList.toggle('is-complete',index<step || index===1 && replySaved || index===2 && connected && Number($('#clientEnablePad').dataset.joined)>0);
+    button.classList.toggle('is-complete',index<step || index===1 && exported || index===2 && connected && Number($('#clientEnablePad').dataset.joined)>0);
   }
   const watching=$('#clientEnablePad').dataset.ready==='true' && $('#clientEnablePad').dataset.canPlay==='false';
   $('#joinStepControls').textContent=watching?'3 · Watch the game':'3 · Join a controller';
   $('#clientControlsFocus').hidden=!connected || watching || $('#clientEnablePad').dataset.ready!=='true' || $('#clientStage').classList.contains('mouse-pad');
   if(connected && !hasVideo && !$('#clientStage').classList.contains('mouse-pad')) {
     const controls=$('#clientEnablePad').dataset,failed=controls.error==='true',pending=Number(controls.pending)>0;
-    $('#clientStageTitle').textContent=audioOnly?'Audio-only session':watching?'Connected as a viewer':failed?'Host controller setup needed':pending?'Joining controllers…':Number(controls.joined)>0?'Ready to play':'Join with your controller';
-    $('#clientStageNote').textContent=failed?'The host could not create your controller. Open Controllers for the setup error.':pending?'Your selected controllers are joining. You do not need to press another button.':!receiveStream?'The stream is paused. Turn it on to receive picture and sound here.':audioOnly?'This session uses sound without a picture. Use the sound button below when audio is available.':watching?'Ask the host to share their screen to watch here.':Number(controls.joined)>0?'Keep this page open while playing. Your host can share their screen here.':'Press a controller button to join, or select a controller in the controller panel.';
+    const joined = Number(controls.joined) > 0;
+    const paused = controls.ready === 'true' && !watching && $('#clientEnablePad').getAttribute('aria-pressed') === 'false';
+    $('#clientStageTitle').textContent=audioOnly?'Audio-only session':watching?'Connected as a viewer':failed?'Host controller setup needed':paused?'Controller sharing paused':pending?'Joining controllers…':joined?'Controller joined':'Join with your controller';
+    $('#clientStageNote').textContent=failed?'Open Controllers to see what needs setup.':paused?'Open Controllers to resume sharing.':pending?'Waiting for a player spot…':!receiveStream?'Turn on the stream to receive picture and sound.':audioOnly?'Use the sound button to listen.':watching?'The host can share their screen here.':joined?'Your host can test your input in Controllers.':'Press a controller button to join.';
   }
   $('#clientAudioOnlyNote').hidden=!connected || !audioOnly || !receiveStream;
 }
@@ -174,13 +186,13 @@ export function pairingUI(side, state) {
     $('label[for="invitationRole"]').textContent=prepared?'Access for next invite':'Invite access';
     const draftNote=$('.invite-draft-note');if(draftNote)draftNote.textContent=prepared?`${$('#hostInviteCard').dataset.inviteAccess} invite · file and text use the same invite.`:'Download a file or copy the text to send through chat.';
     $('#newInvitation').hidden=!prepared && state!=='expired';
-    $('#hostInviteCard').dataset.exportable=String(state==='ready' || !prepared && !['expired','connected'].includes(state));
+    $('#hostInviteCard').dataset.exportable=String(state==='ready' || !prepared && !['expired','connected','cancelled'].includes(state));
     $('#createInvitation').innerHTML = state === 'generating' ? 'Preparing invite…' : `${icon('download')} ${prepared?'Download invite file':'Create invite file'}`;
     $('#hostInviteStep').classList.toggle('is-complete', ready);
     $('#hostReplyStep').classList.toggle('is-complete', state === 'connected');
     if(state==='connected') { $('#hostPairStatus').textContent=$('#hostDynamicControllers').checked ? 'Connected. Ask each guest to press a controller button to join.' : 'Connected. Ask guests to choose their controller devices under Advanced and resume sharing if paused.'; $('#hostStartStatus').textContent='Connected. Open your game’s controller settings to assign guest controllers.'; }
   } else {
-    if(state==='generating' || state==='ready')replySaved=false;
+    if(state==='generating' || state==='ready')replySaved=replyCopied=false;
     $('#clientInviteStep').classList.toggle('is-complete', state === 'ready' || state === 'connected');
     $('#clientReplyStep').classList.toggle('is-complete', state === 'connected');
     $('#createReply').innerHTML = state === 'generating' ? 'Making your reply…' : `Make my reply ${icon('arrow')}`;
@@ -193,18 +205,18 @@ export function playerConnectionUI(state) {
   if(state!=='connected')inputLatencyUI();
   if(state==='connected')clientWasConnected=true;
   if(state==='connected') {$('#downloadReply').disabled=true;$('#copyReply').disabled=true;}
-  if(state==='idle' || state==='closed')clientWasConnected=false;
+  if(['idle','closed','invite-expired'].includes(state))clientWasConnected=false;
   const connected = state === 'connected';
-  const labels = { idle: 'Not connected', closed: 'Not connected', connected: 'Connected', connecting: 'Connecting', waiting: 'Waiting for your friend', disconnected: 'Reconnecting', failed: 'Connection lost' };
+  const labels = { idle: 'Not connected', closed: 'Not connected', connected: 'Connected', connecting: 'Connecting', waiting: 'Waiting for your friend', disconnected: 'Reconnecting', failed: 'Connection lost', 'invite-expired':'Invite expired' };
   $('#clientConnectionText').textContent = labels[state] || state;
   $('#clientConnectionBadge').classList.toggle('is-live', connected);
   $('#clientStage').classList.toggle('controller-only',connected && !hasVideo);
   $('#joinFocus').hidden = connected || state === 'waiting' || state === 'connecting';
-  $('#clientStageTitle').textContent = connected ? "Connected to your host" : state === 'waiting' ? 'Send your reply to the host' : 'Open your host’s invite';
-  $('#clientStageNote').textContent = connected ? "Press a controller button to join. Ask your host to share their screen if you want to watch here." : state === 'waiting' ? 'Send your reply file to your friend. Keep this page open while they connect you.' : "Open the invite file. Your reply downloads automatically; send it back to the host.";
+  $('#clientStageTitle').textContent = connected ? "Connected to your host" : state === 'waiting' ? 'Send your reply to the host' : state==='invite-expired'?'Your invite expired':'Open your host’s invite';
+  $('#clientStageNote').textContent = connected ? 'Press a controller button to join.' : state === 'waiting' ? 'Send your reply to the host and keep this page open.' : state==='invite-expired'?'Ask your host for a fresh invite, then open it here.':'Open or paste your invite. Send the reply back to your host.';
   if (connected) { $('#clientPairing').open = false; pairingUI('client', 'connected'); }
-  if (state === 'idle' || state === 'closed' || state === 'failed') playerVideoUI(false);
-  if(state==='idle' || state==='closed')replySaved=false;
+  if (['idle','closed','failed','invite-expired'].includes(state)) playerVideoUI(false);
+  if(['idle','closed','invite-expired'].includes(state))replySaved=replyCopied=false;
   sessionFlowUI();
   refreshQuickStart();
 }
@@ -245,8 +257,14 @@ export function controllerUI(enabled) {
   if(button.dataset.dynamic==='true')button.innerHTML=`${icon('pad')} ${enabled ? 'Pause controller sharing':'Resume controller sharing'}`;
   $('#clientEnableGroup').innerHTML = button.innerHTML; $('#clientEnableGroup').disabled = button.disabled; $('#clientEnableGroup').setAttribute('aria-pressed',String(enabled));
   button.classList.toggle('active', enabled); button.setAttribute('aria-pressed', String(enabled));
-  $('#playerFooterHint').textContent = playerState!=='connected' ? 'Connect to your host, then press a controller button to join.' : button.dataset.ready==='false' ? 'Finishing your connection. Keep this page open.' : button.dataset.canPlay==='false' ? 'Watching only. Ask the host for a Play invite to join with a controller.' : enabled ? 'Controls are on. Test your buttons in the controller panel before playing.' : 'Turn on your controls in the controller panel to play.';
-  if(playerState==='connected' && button.dataset.ready==='true' && button.dataset.canPlay==='true' && button.dataset.dynamic==='true')$('#playerFooterHint').textContent=enabled?Number(button.dataset.joined || 0)>0?'Press a button on another controller to add a player.':'Press a button on your controller to join.':'Controller sharing is paused. Open Controllers to resume.';
+  const hint = $('#playerFooterHint');
+  const pressToJoin = playerState==='connected' && button.dataset.ready==='true' && button.dataset.canPlay==='true' && button.dataset.dynamic==='true';
+  const hasJoined = Number(button.dataset.joined || 0)>0;
+  let message = playerState!=='connected' ? 'Connect to your host, then press a controller button to join.' : button.dataset.ready==='false' ? 'Finishing your connection. Keep this page open.' : button.dataset.canPlay==='false' ? 'Watching only. Ask the host for a Play invite to join with a controller.' : enabled ? 'Controls are on. Test your buttons in the controller panel before playing.' : 'Turn on your controls in the controller panel to play.';
+  if(pressToJoin)message=enabled ? (hasJoined ? 'Press a button on another controller to add a player.' : 'Press a button on your controller to join.') : 'Controller sharing is paused. Open Controllers to resume.';
+  hint.parentElement.toggleAttribute('data-awaiting-controller', pressToJoin && enabled && !hasJoined);
+  if(hint.textContent!==message)hint.textContent=message;
+  if (playerState === 'connected' && !hasVideo) sessionFlowUI();
 }
 export function soundUI(muted) {
   const stream=$('#clientAudio').srcObject || $('#clientVideo').srcObject;
@@ -276,7 +294,7 @@ export function initUI() {
   const exports=document.createElement('div');exports.className='invite-exports';$('#createInvitation').before(exports);exports.append($('#createInvitation'),createText);$('#createInvitation').classList.remove('full');
   $('#downloadInvitation').hidden=true;$('#copyInvitation').hidden=true;$('#hostReplyStep').hidden=true;
   const rawInvite=$('#hostInvitation').closest('details');rawInvite.querySelector('summary').textContent='View invite text';rawInvite.classList.add('invite-raw');
-  const draftNote=document.createElement('p');draftNote.className='small muted invite-draft-note';draftNote.textContent='File and text contain the same invite. Use New invite for another guest.';exports.after(draftNote,$('#newInvitation'));
+  const draftNote=document.createElement('p');draftNote.className='small muted invite-draft-note';draftNote.textContent='File and text contain the same invite. Use New invite for another guest.';exports.after(draftNote);
   function inviteButtons(){const busy=$('#createInvitation').disabled,exportable=$('#hostInviteCard').dataset.exportable!=='false';createText.disabled=busy || !exportable;$('#newInvitation').disabled=busy;$('#createInvitation').setAttribute('aria-disabled',String(busy || !exportable));$('#invitationRole').disabled=busy;}
   new MutationObserver(inviteButtons).observe($('#createInvitation'),{attributes:true,attributeFilter:['disabled']});
   new MutationObserver(inviteButtons).observe($('#hostInviteCard'),{attributes:true,attributeFilter:['data-exportable']});inviteButtons();
@@ -289,7 +307,7 @@ export function initUI() {
   const nextActions=document.createElement('div');nextActions.className='next-step-actions';$('#hostNextStep').append(nextActions);nextActions.append($('#hostNextAction'));
   const pasteReply=document.createElement('button');pasteReply.id='hostNextPasteReply';pasteReply.className='button secondary';pasteReply.textContent='Paste reply text';pasteReply.onclick=()=>$('#hostPasteReply').click();nextActions.append(pasteReply);
   const inviteGuest=document.createElement('button');inviteGuest.id='hostNextInvite';inviteGuest.className='button secondary';inviteGuest.textContent='Invite another guest';inviteGuest.onclick=()=>{$('#inviteFocus').click();if($('#hostInviteCard').dataset.prepared==='true')focusSection('#newInvitation');};nextActions.append(inviteGuest);
-  $('#inviteFocus').innerHTML=`${icon('people')} Invite guests`;
+  $('#inviteFocus').innerHTML=`${icon('plus')} Invite guests`;
   $('#clientReplyAction').onclick=()=>($('#clientPairing').dataset.transfer==='text'?$('#copyReply'):$('#downloadReply')).click();
   $('#hostPairRetry').onclick=()=>($('#hostPairRetry').dataset.action==='invite'?$('#newInvitation'):$('#hostPairRetry').dataset.action==='start'?$('#hostCreate'):$('#hostReplyFile')).click();
   $('#clientPairRetry').onclick=()=>$('#clientInvitationFile').click();
@@ -299,7 +317,7 @@ export function initUI() {
   $('#joinStepReply').onclick=()=>{if($('#downloadReply').disabled){toast('Open your host’s invite first.');focusSection('label[for="clientInvitationFile"]');}else ($('#clientPairing').dataset.transfer==='text'?$('#copyReply'):$('#downloadReply')).click();};
   $('#joinStepControls').onclick=()=>focusSection(playerState!=='connected'?'#clientPairStatus':$('#clientEnablePad').dataset.canPlay==='false'?'#clientStage':$('#controllerSetup').dataset.blockingState==='waiting'?'#connectedControllers':$('#clientEnablePad').dataset.dynamic==='false'?'#clientEnableGroup':'#connectedControllers');
   for(const id of ['clientInvitationFile','hostReplyFile']) {
-    const input=$(`#${id}`),zone=$(`label[for="${id}"]`);
+    const zone=$(`label[for="${id}"]`);
     for(const event of ['dragenter','dragover'])zone.addEventListener(event,e=>{if(![...(e.dataTransfer?.types || [])].includes('Files'))return;e.preventDefault();e.dataTransfer.dropEffect='copy';zone.classList.add('is-dragging');});
     zone.addEventListener('dragleave',e=>{if(!zone.contains(e.relatedTarget))zone.classList.remove('is-dragging');});
     zone.addEventListener('drop',e=>{
@@ -307,8 +325,7 @@ export function initUI() {
       const files=e.dataTransfer?.files;
       if(files?.length!==1){toast('Drop one invite or reply file at a time.');return;}
       if(files[0].size>131072){toast('This file is too large. Use the invite or reply text file from the app.');return;}
-      try {input.files=files;input.dispatchEvent(new Event('change',{bubbles:true}));}
-      catch {toast('Use the Open file button to select this file in your browser.');}
+      document.dispatchEvent(new CustomEvent('pairing-file-dropped',{detail:files[0]}));
     });
   }
   // Accept pairing files anywhere on the current page instead of navigating
@@ -320,8 +337,9 @@ export function initUI() {
   document.addEventListener('drop',event=>{
     if(![...(event.dataTransfer?.types || [])].includes('Files'))return;
     event.preventDefault();
-    const id=document.body.dataset.mode==='host'?'hostReplyFile':'clientInvitationFile';
-    $(`label[for="${id}"]`).dispatchEvent(new DragEvent('drop',{bubbles:true,cancelable:true,dataTransfer:event.dataTransfer}));
+    const files=event.dataTransfer.files;
+    if(files.length!==1){toast('Drop one invite or reply file at a time.');return;}
+    document.dispatchEvent(new CustomEvent('pairing-file-dropped',{detail:files[0]}));
   });
   $('#startShareScreen').onclick = () => $('#hostCapture').click();
   $('#qualityToggle').onclick = () => { $('#hostSettings').open = true; focusSection('#streamResolution'); };
@@ -338,7 +356,15 @@ export function initUI() {
     $(`#${id}`).onclick = async () => {
       const field = $(`#${textarea}`);
       if (!field.value) { toast('Create an invite or reply first, then copy it.'); return; }
-      try { await navigator.clipboard.writeText(field.value);if(id==='copyInvitation')inviteSaved=true;else replySaved=true;sessionFlowUI();toast('Copied. Send it to your friend.'); }
+      const text=field.value;
+      try {
+        await navigator.clipboard.writeText(text);
+        if(field.value!==text)return;
+        if(id==='copyInvitation')inviteSaved=true;else replyCopied=true;
+        sessionFlowUI();
+        if(id==='copyReply' && help.open && tourMode==='client' && currentTour()[tourStep]?.[2]==='#clientReplyAction')nextTour();
+        toast('Copied. Send it to your friend.');
+      }
       catch { field.closest('details').open=true;focusSection(`#${textarea}`);field.select();toast('Select and copy the text below.'); }
     };
   }
@@ -376,11 +402,11 @@ export function initUI() {
     const joinPending=document.body.dataset.sessionJoinPending==='true';
     const replyStep=socketSetup?['Wait for the connection','The app exchanges connection details automatically after the host accepts you.','#sessionJoinStatus',joinPending?'Keep this page open. Use Cancel request to withdraw.':'Keep this page open. Controller and desktop permissions are unchanged.']:playerState==='connected'
       ? ['Your host accepted the reply','Your connection is ready. Continue to the next step.','#clientConnectionBadge','Keep this page open while playing.']
-      : $('#clientReplyAction').hidden?tours.client[1]:$('#clientPairing').dataset.transfer==='text'?['Send your reply','Click Copy reply text and send it to your host through your chat app.','#clientReplyAction','The host pastes your reply to connect you. Keep this page open.']:['Send your reply','Click Save reply & send it back, then send the file to your host through your chat app.','#clientReplyAction','Keep this page open while the host opens your reply.'];
+      : $('#clientReplyAction').hidden?tours.client[1]:$('#clientPairing').dataset.transfer==='text'?['Send your reply','Copy the reply and send it to your host in chat.','#clientReplyAction','The host pastes your reply to connect you. Keep this page open.']:['Send your reply','Send the downloaded file to your host. You can save another copy or send reply text.','#clientReplyAction','Keep this page open while the host opens your reply.'];
     const waiting=socketSetup && joinPending || ['waiting','connecting','disconnected'].includes(playerState) || playerState==='connected' && !ready;
     const waitStep=socketSetup?['Connecting to your host','Wait for host approval and the automatic connection reply.','#sessionJoinStatus','No invite or reply files are needed with this setup.']:playerState==='connected'
       ? ['Finishing your connection','Keep this page open while the input connection becomes ready.','#clientPairStatus','The next instruction appears automatically.']
-      : ['Wait for your host','Send your saved reply to the host. Keep this page open while they click Open reply file.','#clientPairStatus','You can start playing once the connection is ready.'];
+      : ['Wait for your host',replyCopied?'Send the copied reply text to your host. Keep this page open while they paste it.':'Send your saved reply to the host. Keep this page open while they click Open reply file.','#clientPairStatus','You can start playing once the connection is ready.'];
     let joinStep;
     if(waiting)joinStep=waitStep;
     else if(watching)joinStep=['You are connected','This invite lets you watch or listen. Your host chooses what to share.','#clientMediaToggle','Ask for a Play invite if you want to control the game.'];
@@ -455,7 +481,9 @@ export function initUI() {
     const readyInvite=tourMode==='host' && selector==='#createInvitation' && invitationReady;
     target = $(readyInvite ? $('#hostInviteCard').dataset.transfer==='text'?'#createInvitationText':'#createInvitation' : selector);
     if(target?.classList.contains('source-picker-select'))target=target.closest('.source-picker').querySelector('.source-picker-trigger');
-    if(selector==='#clientFullscreen' && matchMedia('(max-width:700px)').matches && $('#clientSettingsFullscreen'))target=$('#clientSettingsFullscreen');
+    if(selector==='#clientFullscreen' && matchMedia('(max-width:700px)').matches){
+      target=$('#clientViewFullscreen')?.getClientRects().length?$('#clientViewFullscreen'):$('#clientSettingsFullscreen');
+    }
     document.dispatchEvent(new CustomEvent('reveal-call-setting',{detail:target}));
     revealMobileTarget(target);
     for(let parent=target?.parentElement;parent;parent=parent.parentElement)if(parent.tagName==='DETAILS')parent.open=true;
@@ -523,6 +551,9 @@ export function initUI() {
   $('#tourSettings').onclick = () => { finishTour(); $('#qualityToggle').click(); };
   for (const id of ['closeHelp', 'helpDone']) $(`#${id}`).onclick = finishTour;
   window.addEventListener('keydown', event => { if (help.open && event.key === 'Escape') { event.preventDefault(); finishTour(); } });
+  matchMedia('(max-width:700px)').addEventListener('change',()=>{
+    if(help.open && currentTour()[tourStep]?.[2]==='#clientFullscreen')renderTour(false);
+  });
   window.addEventListener('resize', () => {if(help.open && target)target.scrollIntoView({block:'center',behavior:'auto'});positionTour();}); window.addEventListener('scroll', positionTour, true);
   new ResizeObserver(positionTour).observe(help);
   document.addEventListener('quick-start', event => {
@@ -530,7 +561,10 @@ export function initUI() {
     if (!help.open) return;
     const action = event.detail;
     if(tourMode==='client' && ['session-requested','session-request-cancelled'].includes(action)){tourStep=action==='session-requested'?1:0;renderTour();return;}
-    if(['client-controls-ready','refresh','host-capture-updated','host-source-updated','host-source-ready'].includes(action)){renderTour(false);return;}
+    if(['client-controls-ready','refresh','host-capture-updated','host-source-updated','host-source-ready'].includes(action)){
+      if(tourMode==='client' && playerState==='invite-expired')tourStep=startingStep();
+      renderTour(false);return;
+    }
     if(scenario!=='connect') {
       const selector=currentTour()[tourStep]?.[2];
       if(action==='host-started' && ['#hostCreate','#hostNextStep'].includes(selector) || action==='client-reply-ready' && selector==='label[for="clientInvitationFile"]')nextTour();

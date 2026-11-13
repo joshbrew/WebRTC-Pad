@@ -36,16 +36,49 @@ try{
     assert.equal((await host.locator('#createInvitation').textContent()).trim(),'Download invite file');
     return host.evaluate(()=>window.copied);
   }
-  console.log('Preparing text invites');const first=await invite();await host.locator('#hostNextInvite').click();await host.locator('#newInvitation').click();const second=await invite();assert.notEqual(JSON.parse(first).pairingId,JSON.parse(second).pairingId);
-  assert.equal(await host.locator('#hostNextPasteReply').isVisible(),true);assert.equal(await host.locator('#hostNextInvite').isVisible(),true);
-  for(const [guest,packet] of [[one,first],[two,second]]){
+  console.log('Preparing text invites');const first=await invite();await host.locator('#newInvitation').click();const second=await invite();assert.notEqual(JSON.parse(first).pairingId,JSON.parse(second).pairingId);
+  const firstCode=JSON.parse(first).pairingId.slice(0,8),secondCode=JSON.parse(second).pairingId.slice(0,8);
+  const pendingInvites=host.locator('#hostPendingInvites');
+  await pendingInvites.getByText('Waiting for 2 replies',{exact:true}).click();
+  await pendingInvites.getByRole('button',{name:`Use invite ${firstCode}`}).click();
+  assert.equal(await invite(),first,'Returning to an earlier invite copies that exact packet');
+  await pendingInvites.getByRole('button',{name:`Use invite ${secondCode}`}).click();
+  assert.equal(await host.locator('#hostInvitation').inputValue(),second);
+  assert.equal(await host.locator('#hostPasteReply').isVisible(),true);assert.equal(await host.locator('#newInvitation').isVisible(),true);
+  for(const [guest,packet] of [[two,second],[one,first]]){
     await guest.locator('#joinPasteAction').click();await guest.locator('#clientInvitation').fill(packet);await guest.locator('#createReply').click();
     await guest.waitForFunction(()=>!!document.querySelector('#clientReply').value);await guest.locator('#clientReplyAction').click();await guest.waitForFunction(()=>!!window.copied);
-    await host.keyboard.press('Escape');await host.locator('#hostNextPasteReply').click();await host.locator('#hostReply').fill(await guest.evaluate(()=>window.copied));await host.locator('#acceptReply').click();
+    if(guest===two){
+      const [replyDownload]=await Promise.all([guest.waitForEvent('download'),guest.locator('#clientReplyAlternate').click()]);
+      assert.equal(await fs.readFile(await replyDownload.path(),'utf8'),await guest.evaluate(()=>window.copied),'File and text export the same reply');
+    }
+    if(!await host.locator('#hostInviteSheet').isVisible())await host.locator('#inviteFocus').click();
+    await host.locator('#hostPasteReply').click();await host.locator('#hostReply').fill(await guest.evaluate(()=>window.copied));await host.locator('#acceptReply').click();
     await guest.waitForFunction(()=>document.querySelector('#clientConnectionText').textContent==='Connected');
+    if(guest===two){await host.locator('#hostPendingInvitesSummary').getByText('Waiting for 1 reply').waitFor({state:'attached'});assert.equal(await host.locator('#hostPendingInviteList li').count(),1);}
     console.log('Guest connected; waiting for main picture');console.log(await host.locator('#hostStatus').textContent());await guest.waitForFunction(()=>Math.abs(document.querySelector('#clientVideo').videoWidth/document.querySelector('#clientVideo').videoHeight-16/9)<.02 && document.querySelector('#clientVideo').getVideoPlaybackQuality().totalVideoFrames>5);
   }
-  assert.equal(downloads,0,'Text pairing does not download files');
+  assert.equal(await host.locator('#hostPendingInviteList li').count(),0);
+  const late=await context.newPage();late.on('pageerror',error=>errors.push(error.message));await late.goto(origin+'/?mode=join');
+  if(!await host.locator('#hostInviteSheet').isVisible())await host.locator('#inviteFocus').click();
+  await host.locator('#newInvitation').click();const unused=await invite();
+  await host.locator('#newInvitation').click();const withdrawn=await invite();
+  const withdrawnCode=JSON.parse(withdrawn).pairingId.slice(0,8);
+  await late.locator('#joinPasteAction').click();await late.locator('#clientInvitation').fill(withdrawn);await late.locator('#createReply').click();
+  await late.waitForFunction(()=>!!document.querySelector('#clientReply').value);
+  if(!await pendingInvites.locator('summary').evaluate(el=>el.parentElement.open))await pendingInvites.locator('summary').click();
+  await pendingInvites.getByRole('button',{name:`Cancel invite ${withdrawnCode}`}).click();
+  assert.equal(await host.locator('#hostInvitation').inputValue(),unused,'Cancelling the selected invite restores the other pending invite');
+  await host.locator('#hostPasteReply').click();await host.locator('#hostReply').fill(await late.locator('#clientReply').inputValue());await host.locator('#acceptReply').click();
+  assert.match(await host.locator('#hostPairErrorText').textContent(),/invite was cancelled/);
+  assert.equal(await host.locator('#hostPendingInviteList li').count(),1);
+  const unusedCode=JSON.parse(unused).pairingId.slice(0,8);
+  await pendingInvites.getByRole('button',{name:`Cancel invite ${unusedCode}`}).click();
+  assert.equal(await pendingInvites.isVisible(),false);
+  assert.equal(await host.locator('#newInvitation').isVisible(),true);
+  for(const guest of [one,two])assert.equal(await guest.locator('#clientConnectionText').textContent(),'Connected');
+  await late.close();
+  assert.equal(downloads,1,'Text pairing downloads only when the guest asks for a file');
   await host.locator('#hostCallSettings').click();await host.locator('#hostLiveSource').evaluate(el=>el.open=true);await host.locator('#hostExtraShares').evaluate(el=>el.open=true);await host.locator('#hostAddShare').click();await host.waitForFunction(()=>document.querySelector('#hostExtraSource').checkVisibility() || document.querySelector('.extra-share-row'));if(await host.locator('#hostExtraSource').isVisible())await host.locator('#hostExtraShares').getByRole('button',{name:'Choose with browser…'}).click();console.log('Added extra browser view');
   await one.waitForFunction(()=>document.querySelector('#clientSharedView').options.length===2);
   const extra=await one.locator('#clientSharedView option').nth(1).getAttribute('value');await view(one,extra);
@@ -58,7 +91,7 @@ try{
   for(const source of [extra,'',extra,''])await view(one,source);
   await one.waitForFunction(()=>document.querySelector('#clientSharedView').value==='' && Math.abs(document.querySelector('#clientVideo').videoWidth/document.querySelector('#clientVideo').videoHeight-16/9)<.02);
   await view(one,extra);await one.waitForFunction(()=>Math.abs(document.querySelector('#clientVideo').videoWidth/document.querySelector('#clientVideo').videoHeight-4/3)<.02);
-  if(!await host.locator('#hostExtraShares').isVisible())await host.locator('#hostCallSettings').click();await host.locator('#hostExtraShares button[aria-label^="Remove shared view"]').click();await one.waitForFunction(()=>document.querySelector('#clientSharedViews').hidden && Math.abs(document.querySelector('#clientVideo').videoWidth/document.querySelector('#clientVideo').videoHeight-16/9)<.02);
+  if(!await host.locator('#hostExtraShares').isVisible())await host.locator('#hostCallSettings').click();await host.locator('#hostExtraShares button[aria-label^="Remove shared view"]').click();await one.waitForFunction(()=>document.querySelector('#clientSharedView').options.length===1 && Math.abs(document.querySelector('#clientVideo').videoWidth/document.querySelector('#clientVideo').videoHeight-16/9)<.02);
   assert.equal(await host.evaluate(()=>window.captureStreams[1].getTracks().every(t=>t.readyState==='ended')),true);
   await host.locator('#hostInviteSheet').evaluate(el=>el.open=false);for(const width of [390,860,1366])for(const page of [host,one]){await page.setViewportSize({width,height:850});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);}
   await host.setViewportSize({width:1366,height:950});await fs.mkdir('.local/screenshots',{recursive:true});await host.screenshot({path:'.local/screenshots/pairing-next-actions.png'});

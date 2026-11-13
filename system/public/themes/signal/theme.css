@@ -1,0 +1,107 @@
+:root[data-skin="signal"] {
+  --stage:#071011;
+  --surface-page:#0b1214;
+  --surface-card:#101d20;
+  --surface-raised:#18292d;
+  --surface-hover:#21383d;
+  --line:#253b3f;
+  --line-strong:#507178;
+  --ink:#e8fbfa;
+  --ink-2:#afcbcd;
+  --ink-3:#94afb3;
+  --accent:#76f0d6;
+  --accent-hover:#a6fae9;
+  --accent-edge:#39b49c;
+  --on-accent:#072820;
+  --accent-text:#76f0d6;
+  --accent-soft:#173932;
+  --accent-soft-ink:var(--accent-text);
+  --focus:var(--accent);
+  --accent-line:#326052;
+  --overlay:#0b191ce8;
+
+  --page-finish:linear-gradient(135deg,#76f0d608,transparent 48%),repeating-linear-gradient(90deg,transparent 0 39px,#76f0d608 39px 40px),repeating-linear-gradient(0deg,transparent 0 39px,#76f0d608 39px 40px);
+  --panel-finish:linear-gradient(135deg,#76f0d60d,transparent 55%);
+  --surface-tool-accent:#91d7f5;
+  --surface-tool-accent-hover:#bbeaff;
+  --surface-tool-accent-edge:#4384a1;
+  --font-display:"IBM Plex Mono",Consolas,monospace;
+  --radius-card:8px;
+  --radius-button:6px;
+}
+
+:root[data-skin="signal"] .view-popout header { font-family:var(--font-display); }
+:root[data-skin="signal"] .floating-screens-controls { margin-inline:0 auto; justify-content:flex-start; }
+
+/* The broadcast console keeps navigation on a rail and setup in a single column. */
+:root[data-skin="signal"] .call-shell .app-header .mode-switch {
+  border:1px solid var(--line);
+  border-radius:8px;
+}
+:root[data-skin="signal"] .call-shell .app-header .mode-switch::before { border-radius:4px; }
+:root[data-skin="signal"] .call-shell .app-header .mode-switch button { border-radius:4px; }
+:root[data-skin="signal"] .call-shell :is(.video-stage,.call-sheet[open]:not(.chat-sheet),#hostSetupCard,.join-device-setup) {
+  border-radius:8px;
+}
+:root[data-skin="signal"] .call-shell #hostSetupCard {
+  display:block;
+  padding:clamp(12px,2vw,22px);
+  border-top:2px solid var(--accent-line);
+}
+:root[data-skin="signal"] .call-shell #hostSetupCard .source-setup { margin-block:12px; }
+:root[data-skin="signal"] .call-shell :is(.host-setup-header,.host-watch-heading) :is(h3,#hostCreate) { font-family:var(--font-display); }
+:root[data-skin="signal"] .call-shell .settings-tabs [role=tab] { border-radius:5px; }
+:root[data-skin="signal"] .call-shell .call-toolbar { border-radius:8px; }
+:root[data-skin="signal"] .call-shell .call-toolbar .button { border-radius:5px; }
+
+@media (min-width:901px) {
+  :root[data-skin="signal"] .call-shell .app-shell {
+    display:grid;
+    grid-template-columns:124px minmax(0,1fr);
+    grid-template-rows:auto 1fr;
+    column-gap:18px;
+    padding-inline:16px;
+  }
+  :root[data-skin="signal"] .call-shell .app-header {
+    --theme-panel-top:12px;
+    grid-column:1;
+    grid-row:1 / span 2;
+    position:sticky;
+    top:0;
+    align-self:start;
+    display:flex;
+    flex-direction:column;
+    align-items:stretch;
+    justify-content:flex-start;
+    height:100dvh;
+    gap:18px;
+    padding:16px 10px 12px 0;
+    border:0;
+    border-right:1px solid var(--line);
+  }
+  :root[data-skin="signal"] .call-shell .app-shell > :is(main,.notices) { grid-column:2; min-width:0; }
+  :root[data-skin="signal"] .call-shell .brand { gap:5px; font-size:12px; white-space:nowrap; }
+  :root[data-skin="signal"] .call-shell .brand-mark { width:26px; height:26px; flex:none; border-radius:5px; }
+  :root[data-skin="signal"] .call-shell .brand-mark .icon { width:17px; height:17px; }
+  :root[data-skin="signal"] .call-shell .app-header .mode-switch { width:100%; grid-template-columns:1fr; grid-template-rows:repeat(2,1fr); }
+  :root[data-skin="signal"] .call-shell .app-header .mode-switch::before { width:auto; height:calc(50% - 4px); bottom:auto; right:4px; }
+  :root[data-skin="signal"] .call-shell .app-header .mode-switch:has(#modeClient[aria-selected=true])::before { transform:translateY(100%); }
+  :root[data-skin="signal"] .call-shell .app-header .mode-switch button { min-height:36px; padding:5px; font-size:11px; }
+  :root[data-skin="signal"] .call-shell .app-header .mode-switch button span { display:none; }
+  :root[data-skin="signal"] .call-shell .header-right { display:flex; flex-wrap:wrap; gap:6px; justify-content:flex-start; }
+  :root[data-skin="signal"] .call-shell .call-connection { flex-basis:100%; min-width:0; }
+  :root[data-skin="signal"] .call-shell .header-right .status-pill { white-space:normal; border-radius:5px; }
+  :root[data-skin="signal"] .call-shell .header-right .button { min-width:30px; padding-inline:6px; border-radius:5px; }
+  :root[data-skin="signal"] .call-shell .header-right .button span { display:none; }
+  :root[data-skin="signal"] .call-shell .call-toolbar:not(:fullscreen .call-toolbar) { left:max(158px,calc((100vw - 1680px) / 2 + 158px)); transform:none; max-width:calc(100vw - 176px); }
+  :root[data-skin="signal"] .call-shell .sectioned-settings:not(.device-quick-sheet,.prejoin-sheet) > .call-sheet-content {
+    display:grid;
+    grid-template-columns:108px minmax(0,1fr);
+    align-content:start;
+    column-gap:10px;
+  }
+  :root[data-skin="signal"] .call-shell .sectioned-settings .settings-tabs { grid-column:1; grid-row:1 / span 2; flex-direction:column; align-self:start; border:0; padding:8px 4px; }
+  :root[data-skin="signal"] .call-shell .sectioned-settings .settings-tabs [role=tab] { flex-direction:row; justify-content:flex-start; text-align:left; padding:5px; }
+  :root[data-skin="signal"] .call-shell .sectioned-settings .settings-tabs [role=tab] span { overflow-wrap:normal; }
+  :root[data-skin="signal"] .call-shell .sectioned-settings :is(.settings-pane,.call-settings-footer) { grid-column:2; }
+}

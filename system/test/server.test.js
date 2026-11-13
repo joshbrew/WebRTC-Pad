@@ -41,6 +41,48 @@ test('server serves the real app and missing drivers leave video rooms available
   assert.equal((await f.join()).slot, 'p1');
 });
 
+test('local handoff authorizes one replacement window and transfers controller ownership',async t=>{
+  const hosting=[],devices=new Set();let opened=0,closed=0;
+  let beginCapture,finishCapture;
+  const captureStarted=new Promise(resolve=>{beginCapture=resolve;});
+  const capturePending=new Promise(resolve=>{finishCapture=resolve;});
+  const f=await fixture(t,{createMessage:{type:'create',dynamicControllers:true},
+    guestInputService:{capability:{available:false},setHosting(active){hosting.push(active);},close(){}},
+    createNativeMedia:()=>Object.assign(new EventEmitter(),{offer(){beginCapture();return capturePending;},close(){}}),
+    createInjector:async()=>{opened++;return {name:'Handoff driver',addController(slot){devices.add(slot);},removeController(slot){devices.delete(slot);},setState(){},close(){closed++;}};}});
+  const candidate=await f.connect(),unrelated=await f.connect();
+  const request=async(ws,type,values={})=>{
+    ws.post({type,requestId:type,...values});
+    return ws.next('native-result');
+  };
+  f.host.post({type:'register-peer',role:'play'});const {peerId}=await f.host.next('peer-registered');
+  f.host.post({type:'controller-count',peerId,count:1});await f.host.next('slot-update');assert.equal(devices.size,1);
+  assert.match((await request(unrelated,'handoff-prepare',{peerId,members:['host',peerId]})).error,/current host/);
+  f.host.post({type:'native-offer',peerId:'preview',quality:{frameRate:30,maxBitrate:2000000},requestId:'capture'});
+  await captureStarted;
+  let ticket;
+  try {
+    const authorized=await request(f.host,'handoff-prepare',{peerId,members:['host',peerId]});
+    assert.equal(authorized.requestId,'handoff-prepare','The switch request reaches the guest while capture is still pending');
+    ({ticket}=authorized.result);
+  } finally { finishCapture({}); }
+  assert.equal((await f.host.next('native-result')).requestId,'capture');
+  assert.match((await request(unrelated,'handoff-commit',{ticket})).error,/Prepare/);
+  const {mapping}=(await request(candidate,'handoff-stage',{ticket})).result;
+  assert.equal(mapping[peerId].peerId,'host');
+  assert.equal(f.app.rooms.size,1);assert.equal(devices.size,1);
+  assert.match((await request(unrelated,'handoff-stage',{ticket})).error,/expired/);
+  assert.deepEqual((await request(candidate,'handoff-commit',{ticket})).result,{switched:true});
+  const next=await candidate.next('created');
+  assert.notEqual(next.roomId,f.room.roomId);assert.notEqual(next.injectToken,f.room.injectToken);
+  assert.equal(f.app.rooms.size,1);assert.equal(opened,1);assert.equal(closed,0);assert.deepEqual(hosting,[true]);
+  assert.match((await request(unrelated,'handoff-stage',{ticket})).error,/expired/);
+  candidate.post({type:'controller-count',peerId:mapping.host.peerId,count:1});
+  const slot=await candidate.next('slot-update');assert.equal(slot.slot,'p1');assert.deepEqual([...devices],['p1']);
+  candidate.post({type:'end'});await until(()=>closed===1);
+  assert.deepEqual(hosting,[true,false]);
+});
+
 test('desktop overlay is host-controlled, accepts registered cursor coordinates only, and cleans up on disconnect/end', async t => {
   const calls=[]; let created=0;
   const overlay=Object.assign(new EventEmitter(),{send(value){calls.push(value);},close(){calls.push({type:'closed'});}});
@@ -334,24 +376,30 @@ test('adaptive groups grow past four and sixty-four, reuse freed slots, and XInp
   assert.equal(x.room.config.adaptiveControllers,false);assert.equal(x.room.config.maxRemoteControllers,4);
 });
 
-test('additional native views are independent, lazy, video-only and cleaned up on removal or room end',async t=>{
+test('additional native views are lazy, have independent sound and are cleaned up on removal or room end',async t=>{
   const calls=[];let serial=0;
   class Media extends EventEmitter{
     constructor(env){super();this.number=++serial;this.env=env;}
-    async offer(id,q){calls.push(['offer',this.number,id,this.env.NATIVE_WINDOW_HANDLE,this.env.NATIVE_AUDIO]);return {sdp:{type:'offer',sdp:'fixture'}};}
+    async offer(id,q,ice,options){calls.push(['offer',this.number,id,this.env.NATIVE_WINDOW_HANDLE,this.env.NATIVE_AUDIO,options?.videoOnly===true]);return {sdp:{type:'offer',sdp:'fixture'}};}
+    async setAudio(enabled,pid){calls.push(['audio',this.number,enabled,pid]);return {audioAvailable:enabled};}
     async answer(id){calls.push(['answer',this.number,id]);}
     async closePeer(id){calls.push(['peer-close',this.number,id]);}
     close(){calls.push(['close',this.number]);}
   }
   const targets=[{kind:'window',id:'123',pid:42,processStart:'first',label:'Game'},{kind:'window',id:'456',pid:43,processStart:'second',label:'Scoreboard'}];
-  const f=await fixture(t,{getCaptureTargets:async()=>targets,createNativeMedia:env=>new Media(env)}),peer=await f.join();
+  const f=await fixture(t,{platform:'linux',env:{NATIVE_AUDIO_HELPER:process.execPath,NATIVE_AUDIO_LIBPULSE:process.execPath},getCaptureTargets:async()=>targets,createNativeMedia:env=>new Media(env)}),peer=await f.join();
   const command=async(type,values={})=>{f.host.post({type,peerId:peer.peerId,requestId:type,...values});return f.host.next('native-result');};
   const a=(await command('native-source-add',{id:'123'})).result,b=(await command('native-source-add',{id:'456'})).result;
   assert.notEqual(a.sourceId,b.sourceId);assert.equal(calls.length,0,'Adding a view does not start capture or encoding');
   const q={width:1280,height:720,frameRate:60,maxBitrate:5000000};
   await command('native-offer',{sourceId:a.sourceId,quality:q});await command('native-offer',{sourceId:b.sourceId,quality:q});
-  assert.deepEqual(calls.filter(c=>c[0]==='offer').map(c=>c.slice(3)),[['123','0'],['456','0']]);
-  assert.equal((await command('native-audio',{sourceId:a.sourceId,enabled:true})).error,'Additional screens use video only');
+  assert.deepEqual(calls.filter(c=>c[0]==='offer').map(c=>c.slice(3)),[['123','0',false],['456','0',false]]);
+  assert.equal((await command('native-audio',{sourceId:a.sourceId,enabled:true})).result.audioAvailable,true);
+  assert.deepEqual(calls.at(-1),['audio',1,true,42]);
+  await command('native-offer',{sourceId:a.sourceId,quality:q,viewer:true});
+  assert.equal(calls.at(-1)[5],false,'A separate viewer also negotiates audio');
+  assert.equal((await command('native-audio',{sourceId:a.sourceId,enabled:false})).result.audioAvailable,false);
+  assert.deepEqual(calls.at(-1),['audio',1,false,0]);
   await command('native-answer',{sourceId:b.sourceId,sdp:{type:'answer',sdp:'fixture'}});assert.deepEqual(calls.at(-1),['answer',2,peer.peerId]);
   await command('native-source-remove',{sourceId:a.sourceId});assert.deepEqual(calls.at(-1),['close',1]);
   assert.match((await command('native-offer',{sourceId:a.sourceId,quality:q})).error,/no longer/);

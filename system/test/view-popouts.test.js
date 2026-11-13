@@ -14,11 +14,11 @@ test('a delayed close cannot terminate a newer subscription to the same view',as
 test('late offers and errors from a removed tile cannot replace a re-opened view',async()=>{
   const oldWindow=globalThis.window;globalThis.window={addEventListener(){}};
   try{
-    const guest=new GuestViewPopouts({send(){},status(){}}),entry=guest.entry('view');entry.pc={close(){this.closed=true;}};
+    const guest=new GuestViewPopouts({send(){},status(){}}),entry=guest.entry('view'),pc={close(){this.closed=true;}};entry.pc=pc;
     for(const type of ['view-error','view-offer'])await guest.handle({type,sourceId:'view',requestId:'previous',error:'old failure'});
-    assert.equal(entry.pc.closed,undefined);assert.equal(entry.noteText,'Connecting… · video only');
+    assert.equal(entry.pc.closed,undefined);assert.equal(entry.noteText,'Connecting…');
     await guest.handle({type:'view-error',sourceId:'view',requestId:entry.requestId,error:'current failure'});
-    assert.equal(entry.pc.closed,true);assert.equal(entry.noteText,'current failure');
+    assert.equal(pc.closed,true);assert.equal(entry.pc,null);assert.equal(entry.noteText,'current failure');
   }finally{globalThis.window=oldWindow;}
 });
 

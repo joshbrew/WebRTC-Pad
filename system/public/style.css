@@ -120,6 +120,17 @@ video:-webkit-full-screen { width: 100vw; height: 100vh; object-fit: contain; ba
 #clientToolbar .toolbar-divider { display:none; }
 .under-stage { display: flex; align-items: center; justify-content: center; gap: 7px; color: var(--ink-3); font-size: 11px; padding: 8px 0 23px; border-bottom: 1px solid var(--line); }
 .under-stage .icon { width: 14px; height: 14px; color: var(--accent-text); }
+@media (prefers-reduced-motion: no-preference) {
+  .under-stage[data-awaiting-controller] > .icon { animation: controller-join-rattle 2600ms ease-in-out infinite; }
+}
+@keyframes controller-join-rattle {
+  0%, 100% { rotate: 0deg; translate: 0; }
+  3% { rotate: -15deg; translate: -2px 0; }
+  6% { rotate: 13deg; translate: 2px 0; }
+  9% { rotate: -8deg; translate: -1px 0; }
+  12% { rotate: 5deg; translate: 1px 0; }
+  16% { rotate: 0deg; translate: 0; }
+}
 .input-health { flex:0 0 auto; padding:5px 8px; border:1px solid var(--line); border-radius:20px; font-size:11px; color:var(--mint); white-space:nowrap; }
 #clientPanel .under-stage { flex-wrap:wrap; }
 .sidebar { padding-top: 5px; display: flex; flex-direction: column; gap: 15px; }
@@ -384,7 +395,6 @@ dialog>p { font-size: 12px; color: var(--ink-2); }
 #hostPanel[data-session="active"] { grid-template-columns:minmax(0,1fr) 360px; }
 #hostPanel[data-session="active"] .view-heading { margin-bottom:20px; }
 #hostPanel[data-session="active"] .toolbar-divider { display:none; }
-#hostPanel[data-session="active"] #hostEnd { order:-1; }
 #hostPanel[data-session="active"] .toolbar-info { font-size:12px; }
 #hostPanel[data-session="active"] #hostInviteCard { margin-top:0; }
 @media(max-width:1100px) { #hostPanel[data-session="active"] { grid-template-columns:minmax(0,1fr) 300px; } }
@@ -400,9 +410,6 @@ dialog>p { font-size: 12px; color: var(--ink-2); }
 
 /* Keep initial hosting actions within a normal laptop viewport. */
 #hostSetupCard { padding:16px; margin-bottom:16px; }
-#hostSetupCard .quick-start-heading h3 { font-size:19px; }
-#hostSetupCard .step-number { width:30px; height:30px; font-size:14px; }
-#hostSetupCard #hostSetupIntro { margin:7px 0 9px; font-size:13px; }
 #hostSetupCard .source-setup { margin:9px 0; padding:10px 12px; }
 #hostSetupCard .field-label { margin-top:8px; margin-bottom:4px; }
 #hostSetupCard select { min-height:36px; padding:7px 10px; font-size:12px; }
@@ -413,7 +420,6 @@ dialog>p { font-size: 12px; color: var(--ink-2); }
 #hostSetupCard #nativeAudioNote, #hostSetupCard #nativeAudioStatus { margin:4px 0; font-size:11px; }
 #hostSetupCard #captureOptions { margin-top:4px; padding-top:6px; }
 #hostSetupCard #hostPlayerOptions { margin-top:10px; padding-top:9px; }
-#hostSetupCard #hostCreate { min-height:40px; padding:9px 17px; }
 #hostSetupCard #browserAudioNote { margin-top:8px; padding-top:7px; }
 #hostSetupCard #browserAudioNote p { margin:4px 0; font-size:11px; }
 .source-setup .audio-only-switch { float:right; margin:0; font-size:11px; }

@@ -1,4 +1,4 @@
-import {GuestViewCheck,initCallComfort,guestCaption,addControllerTest,updateLiveTests,ReconnectGrace,cleanGuestView,readPreference,writePreference} from './call-comfort.js';
+import {GuestViewCheck,initCallComfort,guestCaption,addControllerTest,paintControllerState,paintControllerTest,updateLiveTests,ReconnectGrace,cleanGuestView,readPreference,writePreference} from './call-comfort.js';
 import {independentPlayback} from './playback.js';
 import {prepareVideoHandover} from './video-handover.js';
 import {videoHealth} from './video-health.js';
@@ -24,21 +24,21 @@ import { buttonLabels, packGamepadState, neutralState, keyboardState, inputPacer
 import {inputWireVersion,inputPayload,decodeInputPacket,inputQueueLimit} from './input-wire.js';
 import {codecSupport} from './codecs.js';
 import {SessionInvites} from './sessions.js';
-import {controllerPresence} from './controller-presence.js';
+import {controllerPresence,LocalControllerJoin} from './controller-presence.js';
 import {HostShares,guestViewSelector} from './host-shares.js';
 import {sourcePicker} from './source-picker.js';
 import {CaptureArea} from './capture-region.js';
-import {HostViewPopouts,GuestViewPopouts} from './view-popouts.js';
+import {HostViewPopouts,GuestViewPopouts,FloatingScreens,mirrorPlayer,mirrorVideo} from './view-popouts.js';
 import {GuestTiles} from './guest-tiles.js';
 import {initCallShell} from './call-shell.js';
 import {AppInputs} from './app-inputs.js';
 import {ReverseControllers} from './reverse-controllers.js';
 import {fullscreenToolbar} from './stage-controls.js';
 import { addCandidate, setRemote, acceptInput, replaceCapture, applySenderQuality, preferLowLatency, inputChannelOptions } from './rtc.js';
-import { streamSettings, captureConstraints, applyCaptureSettings, qualityLabel } from './media.js';
+import { streamSettings, captureConstraints, applyCaptureSettings, qualityLabel, videoContentHint } from './media.js';
 import { isPlayerSlot, playerSlots } from './players.js';
 import { receivedVideoStats, videoStatsLabel } from './stats.js';
-import { clientQuality, effectiveQuality, adaptQuality, nativeEncodingKey, qualityFloor } from './quality.js';
+import { clientQuality, effectiveQuality, adaptQuality, adaptationMetrics, nativeEncodingKey, screenQuality, secondaryResolution } from './quality.js';
 import { desktopCodes, desktopSnapshot, videoPoint } from './desktop.js';
 import { cursorLayer, cursorColor } from './cursors.js';
 import { gatherIce, pairingPacket, parsePairing, downloadPairing, sanitizeIceConfig, connectionFailure, filePairingBrowserHint } from './pairing.js';
@@ -46,7 +46,7 @@ import { initUI, modeUI, hostSessionUI, hostSharingUI, peopleUI, pairingUI, pair
 const $ = selector => document.querySelector(selector);
 $('#clientVideo').muted=readPreference('sharedSound',true)===false;
 $('#clientAudio').muted=$('#clientVideo').muted;
-$('#clientAudio').addEventListener('shared-audio-playback',()=>soundUI($('#clientVideo').muted));
+$('#clientAudio').addEventListener('shared-audio-playback',()=>{soundUI($('#clientVideo').muted);refreshGuestScreenSound();});
 let participants,inputStreams,reverseControllers;
 function autoDownloadPairing(button){button.dataset.automaticDownload='true';try{button.click();}finally{delete button.dataset.automaticDownload;}}
 const hostConnectionReports=new ConnectionReports('host'),clientConnectionReports=new ConnectionReports('guest');
@@ -214,8 +214,13 @@ function shareInputPolicy(p) {
   const sourceId=p.controlSourceId ?? p.videoSourceId ?? '',policy=sourceId?(hostShares.get(sourceId)?.policy || {desktopMouse:false,desktopKeyboard:false,desktopVideoMatches:false}):hostDesktopPolicy;
   if(p.control?.readyState==='open')p.control.send(JSON.stringify({type:'input-policy',allowKeyboard:keyboardAllowed,cursorLabels:hostCursorLabels,showCursors:hostShowGuestCursors,pointerSize:pointerDimensions(sourceId),...policy,desktopSourceId:sourceId,desktopToken:p.desktopToken}));
 }
+function primaryShareHasAudio(){
+  return $('#nativeCaptureAudio').checked && ((nativeCapture || hybridAudioWanted())?nativeAudioReady:captureStream?.getAudioTracks().some(track=>track.readyState==='live' && track.enabled && !track.muted)===true);
+}
 function shareCaptureInfo(p) {
-  if(p.control?.readyState==='open')p.control.send(JSON.stringify({type:'capture-info',audioOnly:!p.videoSourceId && audioOnly(),audioBackend:hybridAudioWanted()?'native':'video',audio:!p.videoSourceId && $('#nativeCaptureAudio').checked && ((nativeCapture || hybridAudioWanted())?nativeAudioReady:captureStream?.getAudioTracks().some(t=>t.readyState==='live' && t.enabled && !t.muted)===true)}));
+  if(p.control?.readyState!=='open')return;
+  const sourceId=p.videoSourceId || '',extra=hostShares.get(sourceId);
+  p.control.send(JSON.stringify({type:'capture-info',sourceId,audioOnly:!sourceId && audioOnly() && hostMediaActive(),audioBackend:!sourceId && hybridAudioWanted()?'native':'video',audio:extra?hostShares.hasAudio(extra):!sourceId && primaryShareHasAudio()}));
 }
 function desktopAvailability() {
   if(!hostRoom && preparedDesktopPolicy && preparedDesktopSource!==desktopSetupKey())preparedDesktopSource=desktopSetupKey();
@@ -260,15 +265,21 @@ $('#hostAllowKeyboard').onchange = () => {
   for (const p of hostPeers.values()) shareInputPolicy(p);
 };
 const nativeRequests = new Map();
+function localRequest(ws,type,value,timeout=60000) {
+  if(ws?.readyState!==WebSocket.OPEN)return Promise.reject(Error('The local app is disconnected.'));
+  const requestId=crypto.randomUUID();
+  return new Promise((resolve,reject)=>{
+    const timer=setTimeout(()=>{nativeRequests.delete(requestId);reject(Error('The local app did not respond in time.'));},timeout);
+    nativeRequests.set(requestId,{resolve,reject,timer,ws});
+    try{ws.send(JSON.stringify({type,requestId,...value}));}
+    catch(error){clearTimeout(timer);nativeRequests.delete(requestId);reject(error);}
+  });
+}
 function nativeCommand(type, peerId, value = {}) {
   const previewCommands={'capture-source':'preview-source','native-offer':'preview-offer','native-answer':'preview-answer','native-close':'preview-close','native-stop':'preview-stop','native-audio':'preview-audio','native-ice':'preview-ice'};
   if (hostWs?.readyState !== WebSocket.OPEN || !hostRoom && (peerId!=='preview' || !previewCommands[type] && !type.startsWith('audio-'))) return Promise.reject(new Error('Open a local preview or start a session first'));
   if(!hostRoom && !type.startsWith('audio-'))type=previewCommands[type];
-  const requestId = crypto.randomUUID();
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => { nativeRequests.delete(requestId); reject(new Error('Native capture timed out')); }, 60000);
-    nativeRequests.set(requestId, { resolve, reject, timer }); send(hostWs, { type, peerId, requestId, ...value });
-  });
+  return localRequest(hostWs,type,{peerId,...value});
 }
 let hostSlots = playerSlots(4);
 async function refreshCaptureTargets(forWindowControl=false) {
@@ -326,15 +337,15 @@ function restoreLastShareSource(){
   const show=message=>{lastSourceNote.firstElementChild.textContent=message;lastSourceNote.hidden=false;};
   if(audioOnly()){
     const audio=matchLastSource(lastHostSetup.audio,captureSourceTargets);
-    if(audio){$('#nativeAudioTarget').value=audio.id;selectedSource='audio-only';lastSharePending=false;show(`Last audio source selected: ${audio.label}. Start session to share it.`);}
-    else if(saved.kind==='browser'){$('#nativeAudioTarget').value='browser';rememberedBrowserShare=true;lastSharePending=false;show('Start session to choose the browser audio source again.');}
+    if(audio){$('#nativeAudioTarget').value=audio.id;selectedSource='audio-only';lastSharePending=false;show(`Last audio source: ${audio.label}. Choose Share audio to use it.`);}
+    else if(saved.kind==='browser'){$('#nativeAudioTarget').value='browser';rememberedBrowserShare=true;lastSharePending=false;show('Choose Share audio to open the browser picker.');}
     else {show('Choose the audio source to use for this session.');}
     return;
   }
   if(saved.kind==='none'){lastSharePending=false;return;}
   if($('#captureBackend').value==='browser'){
     rememberedBrowserShare=!lastHostSetup.area && !lastHostSetup.needsAreaReview && !audioOnly();lastSharePending=false;
-    show(lastHostSetup.area || lastHostSetup.needsAreaReview?'Your last share used a selected area. Choose the source and area again.':`Last shared: ${saved.label || 'browser source'}. Start session to choose it in the sharing dialog.`);return;
+    show(lastHostSetup.area || lastHostSetup.needsAreaReview?'Your last share used a selected area. Choose the source and area again.':`Last shared: ${saved.label || 'browser source'}. Choose a window or screen to share again.`);return;
   }
   const target=matchLastSource(saved,captureSourceTargets);if(!target){show(`Last shared: ${saved.label || 'window'}. Open it or choose another source.`);return;}
   if(lastHostSetup.needsAreaReview || lastHostSetup.area && (target.width!==lastHostSetup.bounds?.width || target.height!==lastHostSetup.bounds?.height)){
@@ -343,7 +354,7 @@ function restoreLastShareSource(){
   selectedSource=target.id;lastSharePending=false;
   if(lastHostSetup.area){captureArea.value={...lastHostSetup.area};captureArea.render();restoredShareArea=true;}
   if(lastHostSetup.audio){const target=matchLastSource(lastHostSetup.audio,captureSourceTargets);if(target)$('#nativeAudioTarget').value=target.id;}
-  show(`Last source selected: ${target.label}. Start session to share it.`);
+  show(`Last source: ${target.label}. Choose it again to preview or share.`);
 }
 function rememberHostSetup(){
   if(!lastHostConfigApplied)return;
@@ -401,7 +412,7 @@ function captureSetupUI() {
   $('#captureTarget').disabled=captureBusy;$('#captureBackend').disabled=captureBusy;$('#hostAudioOnly').disabled=captureBusy;
   if(!hostRoom)$('#hostCreate').disabled=captureBusy || previewExitPending || hostWs?.starting===true;
   $('#refreshCaptureTargets').hidden=true;$('#refreshCaptureTargets').disabled=captureBusy;
-  $('#hostSourceStatus').textContent=captureBusy?'Preparing the selected source…':selectedSource==='none'?only?'Choose an audio source, or start with controllers only.':'No screen shared. Share controls only, or choose a window or screen.':only?`${audioTarget?.label || 'Browser audio'} · ${hostRoom?'sharing audio only':'start a session to share audio'}`:`${$('#captureTarget').selectedOptions[0]?.textContent || 'Selected screen'} · ${hostRoom && hostMediaActive()?'sharing with connected guests':'start a session to share this source'}`;
+  $('#hostSourceStatus').textContent=captureBusy?'Preparing source…':!hostMediaActive()?(only?'Choose an audio source.':hostRoom?'':'Start without a screen to share controllers only.'):only?`${audioTarget?.label || 'Browser audio'} · ${hostRoom?'sharing audio only':'ready to share'}`:`${$('#captureTarget').selectedOptions[0]?.textContent || 'Selected screen'} · ${hostRoom?'sharing now':'private preview'}`;
   $('#showHostPreview').hidden=only || selectedSource==='none' || previewWanted();
   $('#hostVideoSettings').hidden=only;$('#hostPreviewSettings').hidden=only;$('#qualityToggle').hidden=only;
   const audio=captureStream?.getAudioTracks().filter(t=>t.readyState==='live') || [];
@@ -486,7 +497,7 @@ function applyConfig(config) {
   for (const id of ['invitationRole']) {
     const select = $(`#${id}`), previous = select.value;
     select.replaceChildren();
-    for (const [value, label] of [['play', 'Play · press a controller button to join'], ['watch', 'Just watching']]) {
+    for (const [value, label] of [['play', 'Play with controllers'], ['watch', 'Just watching']]) {
       const option = document.createElement('option'); option.value = value; option.textContent = label; select.append(option);
     }
     select.value = [...select.options].some(o => o.value === previous) ? previous : 'play';
@@ -528,12 +539,13 @@ const sessionInvites=new SessionInvites({
     if(handoff.busy)throw Error('Wait for the host switch to finish, then invite this guest.');
     if(!hostRoom)throw Error('Start a session before accepting guests.');
     const old=sessionGuestPeers.get(guestId);if(old)send(hostWs,{type:'kick',peerId:old});
-    const packet=await prepareInvitation(true,'play');
+    const packet=await prepareInvitation(true,'play',true);
     if(!packet)throw Error($('#hostPairStatus').textContent || 'Could not prepare the connection. Try accepting again.');
     const entry=invitations.get(packet.pairingId);entry.p.sessionGuestId=guestId;entry.p.sessionName=name;sessionGuestPeers.set(guestId,entry.peerId);renderPeers();
     return packet;
   },
   async answer(invitation){
+    if($('#createReply').disabled)throw Error('Finish the current invite first, then try joining again.');
     $('#clientInvitation').value=JSON.stringify(invitation);sessionInvites.preparingReply=true;try{await $('#createReply').onclick();}finally{sessionInvites.preparingReply=false;}
     if(lastReply?.pairingId!==invitation.pairingId)throw Error($('#clientPairStatus').textContent || 'Could not prepare the connection reply.');
     return lastReply;
@@ -545,18 +557,27 @@ const sessionInvites=new SessionInvites({
   remove(guestId){const peerId=sessionGuestPeers.get(guestId);if(peerId)send(hostWs,{type:'kick',peerId});sessionGuestPeers.delete(guestId);},
   ended:()=>disconnectClient('The host ended this session.')
 });
-fetch('/config').then(r => r.ok ? r.json() : null).then(config=>{if(config)applyConfig(config);}).catch(() => {});
+let localControllerInstance;
+const localConfig=fetch('/config').then(r => r.ok ? r.json() : null).then(config=>{
+  localControllerInstance=config?.controllerInstance;
+  if(config)applyConfig(config);
+}).catch(() => {});
 let captureQuality = streamSettings();
+const screenOverrides=new Map();
+function hostScreenQuality(id){
+  return screenQuality(captureQuality,'',screenOverrides.get(id || ''));
+}
 function boundMinimumResolution(select,ceiling){
   for(const option of select.options)option.disabled=Number(option.value)>ceiling;
   if(select.selectedOptions[0]?.disabled){select.value=[...select.options].filter(option=>!option.disabled).at(-1)?.value || '0';if(select.id==='clientMinimumResolution')writePreference(select.id,select.value);}
 }
 try {
   const saved = JSON.parse(localStorage.getItem('webrtc-pad:stream-quality'));
-  if (saved) captureQuality = { ...streamSettings(saved.resolution, saved.frameRate, saved.priority), minHeight:[360,480,720,1080,1440,2160].includes(saved.minHeight)?saved.minHeight:480,autoThrottle: saved.autoThrottle !== false,codec:saved.codec==='h265'?'h265':'h264',...(['p1','p2','p4'].includes(saved.encoderPreset)?{encoderPreset:saved.encoderPreset}:{}) };
+  if (saved) captureQuality = { ...streamSettings(saved.resolution, saved.frameRate, saved.priority), secondaryResolution:secondaryResolution(saved.secondaryResolution),minHeight:[360,480,720,1080,1440,2160].includes(saved.minHeight)?saved.minHeight:480,autoThrottle: saved.autoThrottle !== false,codec:saved.codec==='h265'?'h265':'h264',...(['p1','p2','p4'].includes(saved.encoderPreset)?{encoderPreset:saved.encoderPreset}:{}) };
 } catch { /* Defaults work without browser storage. */ }
-if(lastHostSetup){const saved=lastHostSetup.fields;captureQuality={...streamSettings(saved.streamResolution || captureQuality.resolution,saved.streamFramerate || captureQuality.frameRate,saved.streamPriority || captureQuality.priority),minHeight:Number(saved.streamMinimumResolution || captureQuality.minHeight || 480),autoThrottle:saved.hostAutoThrottle ?? captureQuality.autoThrottle,codec:saved.streamCodec || captureQuality.codec,...((saved.streamEncoderPreset ?? captureQuality.encoderPreset)?{encoderPreset:saved.streamEncoderPreset ?? captureQuality.encoderPreset}:{})};}
+if(lastHostSetup){const saved=lastHostSetup.fields;captureQuality={...streamSettings(saved.streamResolution || captureQuality.resolution,saved.streamFramerate || captureQuality.frameRate,saved.streamPriority || captureQuality.priority),secondaryResolution:secondaryResolution(saved.streamSecondaryResolution ?? captureQuality.secondaryResolution),minHeight:Number(saved.streamMinimumResolution || captureQuality.minHeight || 480),autoThrottle:saved.hostAutoThrottle ?? captureQuality.autoThrottle,codec:saved.streamCodec || captureQuality.codec,...((saved.streamEncoderPreset ?? captureQuality.encoderPreset)?{encoderPreset:saved.streamEncoderPreset ?? captureQuality.encoderPreset}:{})};}
 $('#streamResolution').value = captureQuality.resolution; $('#streamFramerate').value = String(captureQuality.frameRate);
+$('#streamSecondaryResolution').value = secondaryResolution(captureQuality.secondaryResolution);
 $('#streamPriority').value = captureQuality.priority;
 $('#streamCodec').value=captureQuality.codec || 'h264';$('#streamEncoderPreset').value=captureQuality.encoderPreset || '';
 let localCodecSupport={codecs:['h264'],reason:'Checking hardware decoding…'},codecCheckSequence=0;
@@ -577,33 +598,140 @@ boundMinimumResolution($('#streamMinimumResolution'),Number($('#streamResolution
 $('#streamQualityLabel').textContent = qualityLabel(captureQuality);
 function streamInfo(actual) {
   $('#streamQualityLabel').textContent = qualityLabel(captureQuality);
-  $('#hostStreamInfo').textContent = actual?.width ? `Source: ${actual.width} × ${actual.height} at ${Math.round(actual.frameRate || 0)} fps. Sharing at up to ${qualityLabel(captureQuality)}; your screen and network set the available limits.` : 'Choose your settings before sharing, or adjust them during the session.';
+  $('#hostStreamInfo').textContent = actual?.width ? `Source: ${actual.width} × ${actual.height} at ${Math.round(actual.frameRate || 0)} fps.` : '';
 }
-let qualityQueue = Promise.resolve(),qualityRevision=0;
+let qualityQueue = Promise.resolve(),qualityRevision=0,appliedCaptureQuality=hostScreenQuality('');
 function changeStreamQuality() {
   const revision=++qualityRevision;
   boundMinimumResolution($('#streamMinimumResolution'),Number($('#streamResolution').value) || Infinity);
-  const requested = { ...streamSettings($('#streamResolution').value, $('#streamFramerate').value, $('#streamPriority').value), minHeight:Number($('#streamMinimumResolution').value),autoThrottle: $('#hostAutoThrottle').checked,codec:$('#streamCodec').value,...($('#streamEncoderPreset').value?{encoderPreset:$('#streamEncoderPreset').value}:{}) };
+  const requested = { ...streamSettings($('#streamResolution').value, $('#streamFramerate').value, $('#streamPriority').value), secondaryResolution:secondaryResolution($('#streamSecondaryResolution').value),minHeight:Number($('#streamMinimumResolution').value),autoThrottle: $('#hostAutoThrottle').checked,codec:$('#streamCodec').value,...($('#streamEncoderPreset').value?{encoderPreset:$('#streamEncoderPreset').value}:{}) };
+  // Publish the policy immediately, even if capture or preview is busy.
+  captureQuality = requested;
+  renderScreenQualityFields();
+  try { localStorage.setItem('webrtc-pad:stream-quality', JSON.stringify(requested)); } catch { /* Session settings still apply. */ }
   qualityQueue = qualityQueue.then(async () => {
     if(revision!==qualityRevision)return;
-    try {
-      const track = (captureStream?._areaSource || captureStream)?.getVideoTracks()[0],size=track?.getSettings();
-      const actual = track ? await applyCaptureSettings(track, captureArea.current()?{...requested,width:size.width,height:size.height}:requested) : null;
-      if(revision!==qualityRevision)return;
-      captureQuality = requested;
-      try { localStorage.setItem('webrtc-pad:stream-quality', JSON.stringify(requested)); } catch { /* Session settings still apply. */ }
-      if (nativeCapture) await startNativePreview();
-      else if(captureStream?._areaSource)await startCapture(true);
-      for (const p of hostPeers.values()) await applyPeerQuality(p);
-      streamInfo(actual || (nativeCapture ? nativeSource : null));
-      refreshCodecSupport().catch(()=>{});
-      if (track) toast('Stream quality updated.');
-    } catch { $('#hostStreamInfo').textContent = 'Your screen cannot use that setting. Try a lower resolution or frame rate.'; }
+    const previous=appliedCaptureQuality;
+    const main=hostScreenQuality('');
+    const track=(captureStream?._areaSource || captureStream)?.getVideoTracks()[0];
+    let actual=track?.getSettings(),captureError;
+    const captureChanged=['resolution','frameRate'].some(field=>previous[field]!==main[field]);
+    if(track && captureChanged){
+      try{
+        actual=await applyCaptureSettings(track,captureArea.current()?{...main,width:actual.width,height:actual.height}:main);
+        if(captureStream?._areaSource && previous.frameRate!==main.frameRate && revision===qualityRevision)await startCapture(true,{allowPicker:false});
+      }catch(error){captureError=error;}
+    }
+    if(revision!==qualityRevision)return;
+    if(track)track.contentHint=videoContentHint(main);
+    appliedCaptureQuality=main;
+    const previewChanged=nativeEncodingKey('',previous)!==nativeEncodingKey('',main);
+    for(const source of hostShares.sources.values()){
+      const track=source.stream?.getVideoTracks()[0],fps=hostScreenQuality(source.id).frameRate;
+      if(track && source.appliedFrameRate!==fps){
+        source.appliedFrameRate=fps;
+        await track.applyConstraints({frameRate:{ideal:fps,max:fps}}).catch(()=>{});
+      }
+    }
+    if(revision!==qualityRevision)return;
+    const updates=[...hostPeers.values()].map(p=>applyPeerQuality(p));
+    updates.push(hostViewPopouts.refreshQuality());
+    if(nativeCapture && previewChanged)updates.push(startNativePreview());
+    const failed=(await Promise.allSettled(updates)).find(result=>result.status==='rejected');
+    if(revision!==qualityRevision)return;
+    streamInfo(actual || (nativeCapture ? nativeSource : null));
+    if(captureError || failed)$('#hostStreamInfo').textContent = 'Some video settings could not be applied. Try a lower resolution or frame rate.';
+    if(previewChanged)refreshCodecSupport().catch(()=>{});
   });
 }
+let qualitySource=null,qualityScreens=[];
+const screenFields={resolution:$('#screenOverrideResolution'),frameRate:$('#screenOverrideFramerate'),minHeight:$('#screenOverrideMinimum'),autoThrottle:$('#screenOverrideAdaptive'),priority:$('#screenOverridePriority')};
+const priorityNotes={motion:'Keeps the frame rate high and reduces resolution when needed.',balanced:'Keeps frames arriving promptly. Can lower resolution and frame rate if buffering or slow decoding persists.',resolution:'Keeps the picture sharp by reducing frame rate first.'};
+for(const select of [$('#streamPriority'),screenFields.priority]){
+  const note=document.createElement('p');note.id=`${select.id}Note`;note.className='small muted';
+  note.textContent=priorityNotes[select.value] || '';
+  select.after(note);select.setAttribute('aria-describedby',note.id);
+}
+function renderScreenQualityFields(){
+  const screen=qualityScreens.find(source=>source.id===qualitySource);
+  const panel=$('#hostScreenQualityFields');
+  panel.hidden=!screen;$('#hostGlobalQualityFields').hidden=!!screen;
+  for(const button of $('#hostScreenOverrides').querySelectorAll('button'))button.setAttribute('aria-pressed',String((button.dataset.sourceId ?? null)===qualitySource));
+  $('#streamPriorityNote').textContent=priorityNotes[$('#streamPriority').value] || '';
+  if(!screen)return;
+  const quality=hostScreenQuality(screen.id),inherits=!screenOverrides.has(screen.id);
+  $('#hostScreenQualityTitle').textContent=screen.label;
+  $('#screenUseGlobal').checked=inherits;
+  $('#resetScreenQuality').disabled=inherits;
+  for(const [name,field] of Object.entries(screenFields)){
+    field.disabled=inherits;
+    if(field.type==='checkbox')field.checked=quality[name]!==false;else field.value=String(quality[name]);
+  }
+  boundMinimumResolution(screenFields.minHeight,quality.height || Infinity);
+  $('#screenOverridePriorityNote').textContent=priorityNotes[quality.priority] || '';
+  screenFields.minHeight.closest('.stream-quality-minimum').hidden=quality.autoThrottle===false;
+  screenFields.priority.closest('.stream-quality-adaptive').hidden=quality.autoThrottle===false;
+}
+function selectScreenQuality(id,focus=false){
+  qualitySource=qualityScreens.some(source=>source.id===id)?id:null;
+  renderScreenQualityFields();
+  if(focus)$('#hostScreenOverrides [aria-pressed=true]')?.focus();
+}
+function updateScreenOverrides(){
+  const sources=sharedSources(),hasMain=sources.some(source=>!source.id);
+  const entries=sources.map((source,index)=>({...source,number:hasMain?index+1:index+2}));
+  for(const id of screenOverrides.keys())if(!entries.some(source=>source.id===id))screenOverrides.delete(id);
+  const list=$('#hostScreenOverrides');
+  const signature=JSON.stringify(entries);
+  if(list.dataset.sources!==signature){
+    for(const {id} of entries){
+      if(!id || qualityScreens.some(source=>source.id===id))continue;
+      const legacy=screenQuality(captureQuality,id);
+      if(legacy!==captureQuality)screenOverrides.set(id,{...legacy,autoThrottle:legacy.autoThrottle!==false,minHeight:legacy.minHeight || 480});
+    }
+    list.dataset.sources=signature;
+    for(const button of list.querySelectorAll('[data-source-id]'))button.remove();
+    for(const {id,label,number} of entries){
+      const button=document.createElement('button');button.type='button';button.className='button small-button';
+      button.textContent=number;button.dataset.sourceId=id;button.title=label;
+      button.setAttribute('aria-label',`Screen ${number}, ${label}`);button.onclick=()=>selectScreenQuality(id);
+      list.append(button);
+    }
+  }
+  qualityScreens=entries;
+  selectScreenQuality(qualitySource);
+}
+function resetScreenOverrides(){screenOverrides.clear();qualitySource=null;}
+$('#hostScreenOverrides button').onclick=()=>selectScreenQuality(null);
+document.addEventListener('select-host-screen-quality',event=>selectScreenQuality(event.detail?.sourceId,event.detail?.focus));
+$('#screenUseGlobal').onchange=()=>{
+  if(qualitySource===null)return;
+  if($('#screenUseGlobal').checked)screenOverrides.delete(qualitySource);
+  else {
+    const quality=hostScreenQuality(qualitySource);
+    screenOverrides.set(qualitySource,{...quality,autoThrottle:quality.autoThrottle!==false,minHeight:quality.minHeight || 480});
+  }
+  changeStreamQuality();
+};
+for(const field of Object.values(screenFields))field.onchange=()=>{
+  if(!screenOverrides.has(qualitySource))return;
+  boundMinimumResolution(screenFields.minHeight,Number(screenFields.resolution.value) || Infinity);
+  screenOverrides.set(qualitySource,{resolution:screenFields.resolution.value,frameRate:Number(screenFields.frameRate.value),minHeight:Number(screenFields.minHeight.value),autoThrottle:screenFields.autoThrottle.checked,priority:screenFields.priority.value});
+  changeStreamQuality();
+};
+$('#resetScreenQuality').onclick=()=>{
+  if(screenOverrides.delete(qualitySource)){changeStreamQuality();$('#screenUseGlobal').focus();}
+};
+$('#resetGlobalQuality').onclick=()=>{
+  const defaults=streamSettings();
+  for(const [id,value] of Object.entries({streamResolution:defaults.resolution,streamSecondaryResolution:'main',streamMinimumResolution:'480',streamFramerate:defaults.frameRate,streamPriority:defaults.priority,streamCodec:'h264',streamEncoderPreset:''}))$(`#${id}`).value=String(value);
+  $('#hostAutoThrottle').checked=true;
+  changeStreamQuality();rememberHostSetup();document.dispatchEvent(new Event('call-settings-refresh'));
+};
 $('#streamResolution').onchange = changeStreamQuality; $('#streamFramerate').onchange = changeStreamQuality;
 $('#streamPriority').onchange = changeStreamQuality;
 $('#hostAutoThrottle').onchange = changeStreamQuality; $('#streamMinimumResolution').onchange=changeStreamQuality;
+$('#streamSecondaryResolution').onchange=changeStreamQuality;
 $('#streamCodec').onchange=changeStreamQuality;$('#streamEncoderPreset').onchange=changeStreamQuality;
 $('#captureBackend').onchange = async () => {
   const method=$('#captureBackend').value;
@@ -620,7 +748,8 @@ $('#captureBackend').onchange = async () => {
   renderCaptureSources();tutorialEvent('host-source-updated');
   rememberHostSetup();
 };
-function hybridAudioWanted(){return (audioOnly() || $('#captureBackend').value==='browser') && $('#nativeCaptureAudio').checked && nativeAudioToolsReady() && !['none','browser'].includes($('#nativeAudioTarget').value);}
+function hybridAudioSelected(){return (audioOnly() || $('#captureBackend').value==='browser') && nativeAudioToolsReady() && !['none','browser'].includes($('#nativeAudioTarget').value);}
+function hybridAudioWanted(){return $('#nativeCaptureAudio').checked && hybridAudioSelected();}
 let browserOutboundStream;
 function browserMediaStream(){
   const tracks=[...(audioOnly()?[]:captureStream?.getVideoTracks() || []),...($('#nativeCaptureAudio').checked && !hybridAudioWanted()?captureStream?.getAudioTracks() || []:[])];
@@ -656,7 +785,17 @@ async function updateNativeAudio(){
   } catch(error){if(epoch===captureEpoch)nativeAudioError=error.message;}
   finally {if(epoch===captureEpoch){nativeAudioBusy=false;captureSetupUI();for(const p of hostPeers.values())shareCaptureInfo(p);}}
 }
-$('#nativeCaptureAudio').onchange=()=>updateNativeAudio().catch(error=>{nativeAudioError=error.message;captureSetupUI();});
+$('#nativeCaptureAudio').onchange=()=>updateNativeAudio().catch(error=>{nativeAudioError=error.message;captureSetupUI();}).finally(()=>publishScreenAudio('').catch(error=>toast(error.message)));
+function primarySoundControl(){
+  const input=$('#nativeCaptureAudio');
+  const available=nativeCapture || hybridAudioSelected() || captureStream?.getAudioTracks().some(track=>track.readyState==='live');
+  return {audio:true,muted:!input.checked || !available || !!nativeAudioError,soundBusy:nativeAudioBusy,soundMode:'share',toggleSound:()=>{
+    if(input.disabled){toast('Audio is unavailable for this source.');return;}
+    if(!available){toast('To include sound, choose this view again and turn on audio in the browser’s sharing dialog, if available.');return;}
+    if(input.checked && nativeAudioError){updateNativeAudio().finally(()=>publishScreenAudio('')).catch(error=>toast(error.message));return;}
+    input.click();
+  }};
+}
 $('#refreshAudioTargets').onclick=()=>refreshCaptureTargets();
 $('#nativeAudioTarget').onchange=async()=>{
   nativeAudioError='';
@@ -726,11 +865,17 @@ const captureArea=new CaptureArea({controlScope:()=>nativeCapture && localHostPl
   if(!hostMediaActive())return;
   await waitFor(()=>$('#hostPreview').videoWidth>0 && $('#hostPreview').readyState>=2 && !!$('#hostPreview').srcObject,'The preview is not ready. Try again when its picture appears.',5000);
 },apply:async()=>{if(!await startCapture(true))throw new Error('Could not apply the area. Check the selected source.');rememberHostSetup();}});
-const hostViewPopouts=new HostViewPopouts({source:id=>{const extra=hostShares.get(id);return extra || (!id && !audioOnly() && hostMediaActive()?{kind:nativeCapture?'native':'browser',stream:captureStream,identity:nativeCapture?nativeSource:captureStream,settings:nativeSource}:null);},nativeCommand,ice:()=>fetchIce(hostRoom.roomId),quality:p=>p.quality || captureQuality});
-const guestViewPopouts=new GuestViewPopouts({send:msg=>{if(clientPeer?.control?.readyState==='open')clientPeer.control.send(JSON.stringify(msg));},status:toast});
+const hostViewPopouts=new HostViewPopouts({
+  source:id=>hostShares.get(id) || (!id && !audioOnly() && hostMediaActive()?{kind:nativeCapture?'native':'browser',stream:captureStream,identity:nativeCapture?captureEpoch:captureStream}:null),
+  audioTrack:id=>id?hostShares.audioTrack(hostShares.get(id)):browserMediaStream().getAudioTracks().find(track=>track.readyState==='live'),
+  nativeCommand,ice:()=>fetchIce(hostRoom.roomId),sourceHeight:id=>sourceSettings(id).height,
+  quality:(p,id,adaptation)=>effectiveQuality(hostScreenQuality(id),p.requestedQuality,sourceSettings(id),adaptation)
+});
+const guestViewPopouts=new GuestViewPopouts({send:msg=>{if(clientPeer?.control?.readyState==='open')clientPeer.control.send(JSON.stringify(msg));},status:toast,soundChanged:()=>refreshGuestScreenSound(),toggleSound:id=>toggleGuestScreenSound(id),selectedSoundBlocked:()=>$('#clientAudio').playbackBlocked===true});
 const hostShares=new HostShares({root:$('#hostLiveSourceBody'),primaryShared:()=>!audioOnly() && hostMediaActive(),nativeAvailable:()=>nativeCaptureAvailable && $('#captureBackend').value==='native',
-  addNative:id=>nativeCommand('native-source-add','preview',{id}),removeNative:sourceId=>nativeCommand('native-source-remove','preview',{sourceId}),controlNative:(sourceId,enabled)=>nativeCommand('native-window-control','preview',{sourceId,enabled}),quality:()=>captureQuality,status:hostStatus,
-  changed:async()=>{desktopAvailability();hostViewPopouts.prune();for(const p of hostPeers.values()){const available=sharedSources();if(p.videoSourceId && !hostShares.get(p.videoSourceId) || available.length && !available.some(s=>s.id===(p.videoSourceId || '')))await switchHostView(p,available[0]?.id || '');else{if(p.controlSourceId && !hostShares.get(p.controlSourceId))setControlView(p,p.videoSourceId || '');shareViews(p);shareInputPolicy(p);}}}
+  addNative:id=>nativeCommand('native-source-add','preview',{id}),removeNative:sourceId=>nativeCommand('native-source-remove','preview',{sourceId}),controlNative:(sourceId,enabled)=>nativeCommand('native-window-control','preview',{sourceId,enabled}),
+  setNativeAudio:(sourceId,enabled)=>nativeCommand('native-audio','preview',{sourceId,enabled}),nativeAudioAvailable:source=>nativeAudioToolsReady() && (source.settings?.kind!=='window' || nativeAudioCapability.window),audioChanged:publishScreenAudio,quality:()=>captureQuality,status:hostStatus,notify:toast,
+  changed:async()=>{updateScreenOverrides();desktopAvailability();hostViewPopouts.prune();for(const p of hostPeers.values()){const available=sharedSources();if(p.videoSourceId && !hostShares.get(p.videoSourceId) || available.length && !available.some(s=>s.id===(p.videoSourceId || '')))await switchHostView(p,available[0]?.id || '');else{if(p.controlSourceId && !hostShares.get(p.controlSourceId))setControlView(p,p.videoSourceId || '');shareViews(p);shareInputPolicy(p);}}}
 });
 function chooseGuestView(sourceId){
   if(guestTiles.active){guestTiles.feature(sourceId);return;}
@@ -740,7 +885,27 @@ function chooseGuestView(sourceId){
   clientPeer.control.send(JSON.stringify({type:'select-view',sourceId}));
 }
 const clientViews=guestViewSelector($('#clientStage'),chooseGuestView,sourceId=>guestViewPopouts.open(sourceId));
-const guestTiles=new GuestTiles({stage:$('#clientStage'),video:$('#clientVideo'),views:$('#clientSharedViews'),subscriptions:guestViewPopouts,selectView:chooseGuestView,mediaControls:owner=>participantMediaControls('client',owner),changed:(active,featured)=>{
+const floatingScreens=new FloatingScreens({
+  sound:(source,button)=>guestViewPopouts.bindSoundButton(source.id,button),
+  attach:(source,video,note)=>{
+    if(source.stream)return mirrorVideo(video,note,source.stream);
+    if(source.id!==guestTiles.primary || !$('#clientVideo').srcObject)return guestViewPopouts.attach(source.id,video,note);
+    // Reuse the already-decoded primary video. If the call changes its primary
+    // selection, keep this floating view pinned to its original source.
+    let detach=mirrorPlayer($('#clientVideo'),video,note);
+    const keepSource=()=>{
+      if(guestTiles.primary===source.id)return;
+      detach();
+      detach=guestViewPopouts.attach(source.id,video,note);
+      document.removeEventListener('shared-view-selection',keepSource);
+    };
+    document.addEventListener('shared-view-selection',keepSource);
+    return ()=>{document.removeEventListener('shared-view-selection',keepSource);detach();};
+  },
+  notify:toast,changed:()=>updatePopout(),focusChanged:()=>{if(!floatingScreens.focused && !nativeGuest.active && (document.hidden || !document.hasFocus()))releaseClient();}
+});
+const guestTiles=new GuestTiles({stage:$('#clientStage'),video:$('#clientVideo'),views:$('#clientSharedViews'),subscriptions:guestViewPopouts,selectView:chooseGuestView,allowDoubleClick:()=>!$('#clientDesktopMouse').checked,mediaControls:owner=>participantMediaControls('client',owner),
+  openFloating:source=>{if(canFloatScreen(source))floatingScreens.open(source).catch(()=>toast('Could not open the pop-out window.'));},sourcesChanged:sources=>{floatingScreens.updateSources(sources.filter(canFloatScreen));updatePopout();},changed:(active,featured)=>{
   releaseDesktopClient();if(clientPeer?.control?.readyState==='open')clientPeer.control.send(JSON.stringify({type:'control-view',sourceId:active?featured:guestTiles.primary}));updateDesktopMouse();
 }});
 clientCamera.changed=sources=>guestTiles.setCameras(sources);
@@ -749,9 +914,35 @@ function setControlView(p,sourceId){
   p.controlSourceId=sourceId;p.desktopToken=crypto.randomUUID();send(hostWs,{type:'peer-control-view',peerId:id,sourceId,token:p.desktopToken});
   send(injectWs,{type:'desktop-release',peerId:id});hostCursors.remove(id);send(hostWs,{type:'overlay-remove',peerId:id});shareInputPolicy(p);
 }
-function sharedSources(){return [...(!audioOnly() && hostMediaActive()?[{id:'',label:'Main share'}]:[]),...[...hostShares.sources.values()].map(s=>({id:s.id,label:s.label}))];}
+function sharedSources(){return [...(!audioOnly() && hostMediaActive()?[{id:'',label:'Main screen',audio:primaryShareHasAudio(),independentAudio:!hybridAudioWanted()}]:[]),...[...hostShares.sources.values()].map(s=>({id:s.id,label:s.label,audio:hostShares.hasAudio(s)}))];}
 function shareViews(p){
   if(p.control?.readyState==='open')p.control.send(JSON.stringify({type:'shared-views',selected:p.videoSourceId || '',sources:sharedSources()}));
+}
+async function publishScreenAudio(sourceId){
+  document.dispatchEvent(new Event('host-shares-change'));
+  const updates=[hostViewPopouts.refreshAudio(sourceId)];
+  for(const p of hostPeers.values()){
+    shareViews(p);
+    if((p.videoSourceId || '')!==sourceId)continue;
+    shareCaptureInfo(p);
+    if(p.media)updates.push(hostViewPopouts.syncAudio(p.media,sourceId));
+  }
+  await Promise.allSettled(updates);
+}
+function refreshGuestScreenSound(){
+  if(!clientPeer)return;
+  const selected=guestViewPopouts.selected;
+  guestTiles.update({selected,sources:[...guestViewPopouts.sources.values()].map(source=>({...source,audio:source.audio===true && (source.id===selected || source.independentAudio!==false),muted:guestScreenMuted(source.id),soundBlocked:source.id===selected?$('#clientAudio').playbackBlocked:guestViewPopouts.blocked(source.id),toggleSound:()=>toggleGuestScreenSound(source.id)}))});
+  guestViewPopouts.refreshSoundControls();
+}
+function guestScreenMuted(id){return id?guestViewPopouts.muted(id):readPreference('sharedSound',true)===false;}
+function toggleGuestScreenSound(id){
+  const selected=id===guestViewPopouts.selected,blocked=selected?$('#clientAudio').playbackBlocked:guestViewPopouts.blocked(id);
+  const muted=blocked?false:!guestScreenMuted(id);
+  if(!id)writePreference('sharedSound',!muted);
+  guestViewPopouts.setMuted(id,muted,true);
+  if(selected){$('#clientVideo').muted=muted;soundUI(muted);clientPeer?.playback?.play();}
+  refreshGuestScreenSound();
 }
 async function switchHostView(p,sourceId){
   const id=[...hostPeers].find(([,peer])=>peer===p)?.[0];if(!id)return;
@@ -761,13 +952,17 @@ async function switchHostView(p,sourceId){
   shareInputPolicy(p);shareCaptureInfo(p);shareViews(p);
   await applyPeerQuality(p);
 }
-function sourceSettings(p) { const source=hostShares.get(p?.videoSourceId);return source?source.stream?.getVideoTracks()[0]?.getSettings() || source.settings || {}:nativeCapture ? nativeSource : captureStream?.getVideoTracks()[0]?.getSettings() || {}; }
+function sourceSettings(id) { const source=hostShares.get(id);return source?source.stream?.getVideoTracks()[0]?.getSettings() || source.settings || {}:nativeCapture ? {width:nativeSource.width,height:nativeSource.height} : captureStream?.getVideoTracks()[0]?.getSettings() || {}; }
 function shareQualityLimit(p) {
-  if (p.control?.readyState === 'open') p.control.send(JSON.stringify({ type: 'quality-limit', host: { ...captureQuality, ...sourceSettings(p), width: Math.min(captureQuality.width || Infinity, sourceSettings(p).width || Infinity), height: Math.min(captureQuality.height || Infinity, sourceSettings(p).height || Infinity), frameRate: Math.min(captureQuality.frameRate, sourceSettings(p).frameRate || Infinity) }, assigned: p.quality }));
+  if (p.control?.readyState !== 'open') return;
+  const host=hostScreenQuality(p.videoSourceId);
+  const source=sourceSettings(p.videoSourceId);
+  p.control.send(JSON.stringify({ type: 'quality-limit', host: { ...host, width: Math.min(host.width || Infinity, source.width || Infinity), height: Math.min(host.height || Infinity, source.height || Infinity), frameRate: Math.min(host.frameRate, source.frameRate || Infinity) }, assigned: p.quality }));
 }
 async function applyPeerQuality(p) {
-  if (captureQuality.autoThrottle === false || p.requestedQuality?.automatic === false) p.adaptation = {};
-  p.quality = effectiveQuality(captureQuality, p.requestedQuality, sourceSettings(p), p.adaptation?.height);
+  const host=hostScreenQuality(p.videoSourceId);
+  if (host.autoThrottle === false || p.requestedQuality?.automatic === false) p.adaptation = {};
+  p.quality = effectiveQuality(host, p.requestedQuality, sourceSettings(p.videoSourceId), p.adaptation);
   if(p.nativeCodecUnavailable || localHostPlatform==='darwin')p.quality.codec='h264';
   shareQualityLimit(p);
   if (p.receiveVideo === false) return;
@@ -784,9 +979,19 @@ function stopPeerVideo(p) {
   if (p.control?.readyState === 'open'){p.control.send(JSON.stringify({ type: 'native-stop' }));p.control.send(JSON.stringify({type:'audio-stop'}));}
 }
 async function startBrowserPeer(p, force = false) {
-  const extra=hostShares.get(p.videoSourceId),stream=extra?.stream || (!extra?browserMediaStream():null);
+  const extra=hostShares.get(p.videoSourceId);
+  const stream=extra?.stream?(extra.outbound ||= new MediaStream(extra.stream.getVideoTracks())):extra?null:browserMediaStream();
+  if(extra?.outbound){
+    const audio=hostShares.audioTrack(extra);
+    for(const track of stream.getAudioTracks())if(track!==audio)stream.removeTrack(track);
+    if(audio && !stream.getAudioTracks().includes(audio))stream.addTrack(audio);
+  }
   if (!stream || !stream.getTracks().length || p.receiveVideo === false || p.control?.readyState !== 'open') return;
-  if (p.media && !force) { p.media.quality = p.quality; await replaceCapture(p.media, stream); return; }
+  if (p.media && !force) {
+    p.media.quality = p.quality;
+    await replaceCapture(p.media,stream);
+    return;
+  }
   if (p.mediaStarting) {p.mediaAgain=true;return;}
   p.mediaStarting = true;
   try {
@@ -805,9 +1010,14 @@ async function startNativePeer(p, force = false) {
   const sourceId=p.videoSourceId || '',extra=hostShares.get(sourceId);
   if (!(extra?extra.kind==='native':nativeCapture) || p.receiveVideo === false || p.control?.readyState !== 'open' || ![...hostPeers.values()].includes(p)) return;
   const quality={...p.quality},key = nativeEncodingKey(sourceId,quality);
+  if (p.nativeBusy || p.nativeNegotiation || !force && p.nativePresentationId) {
+    if(force || p.nativeKey!==key)p.nativeAgain=true;
+    return;
+  }
   if (!force && p.nativeKey === key) return;
-  if (p.nativeBusy || p.nativeNegotiation || !force && p.nativePresentationId) { p.nativeAgain = true; return; }
+  const replacing=!!p.nativeKey;
   p.nativeBusy = true;
+  p.nativeAgain = false;
   p.nativePresentationId=null;
   try {
     const id = [...hostPeers].find(([, value]) => value === p)?.[0]; if (!id) return;
@@ -816,11 +1026,18 @@ async function startNativePeer(p, force = false) {
     catch(error){if(quality.codec!=='h265')throw error;p.nativeCodecUnavailable=true;quality.codec='h264';p.quality={...p.quality,codec:'h264'};offer=await nativeCommand('native-offer',id,{quality,sourceId});hostStatus('H.265 could not start for this guest. Using H.264.');shareQualityLimit(p);}
     if (epoch!==p.mediaEpoch || sourceId!==(p.videoSourceId || '') || (!extra && (!nativeCapture || sourceEpoch!==captureEpoch)) || extra && hostShares.get(sourceId)!==extra || hostPeers.get(id) !== p || p.control?.readyState !== 'open') { nativeCommand('native-close', id,{sourceId}).catch(() => {}); return; }
     if(extra && offer.sourceSize)extra.settings={...extra.settings,...offer.sourceSize};
+    if(!extra && !nativeAudioBusy && nativeAudioEnabled() && offer.audioAvailable===true && !nativeAudioReady){
+      nativeAudioReady=true;nativeAudioError='';publishScreenAudio('').catch(()=>{});
+    }
     p.nativeKey = nativeEncodingKey(sourceId,quality);
     if(p.nativeKey!==nativeEncodingKey(sourceId,p.quality))p.nativeAgain=true; p.nativeNegotiation = crypto.randomUUID();
     p.nativePresentationId=p.nativeNegotiation;
     clearTimeout(p.nativeTimeout);
-    p.nativeTimeout = setTimeout(() => { p.nativeNegotiation = null;p.nativePresentationId=null; p.nativeKey = null; hostStatus('Native video did not connect. Try Refresh connection or browser capture.'); }, 40000);
+    p.nativeTimeout = setTimeout(() => {
+      if(replacing)return; // Native capture rolls back after its own presentation timeout.
+      p.nativeNegotiation=null;p.nativePresentationId=null;p.nativeKey=null;
+      hostStatus('Native video did not connect. Try Refresh connection or browser capture.');
+    }, 40000);
     p.control.send(JSON.stringify({ type: 'native-offer', id: p.nativeNegotiation, codec:quality.codec || 'h264',sdp: offer.sdp, ice: offer.ice }));
     nativeCaptureDescription=`${offer.capture || 'Native capture'} · ${offer.encoder || 'hardware encoder'} · ${offer.scaling || 'source-sized video'}. Adjust resolution and frame rate in the stream settings.`;
     activeNativeEncoder=offer.encoder || activeNativeEncoder;
@@ -834,17 +1051,19 @@ function startNativePreview() {
   const epoch=captureEpoch;nativePreviewPending++;
   nativePreviewQueue = nativePreviewQueue.catch(() => {}).then(async () => {
   if (!nativeCapture || epoch!==captureEpoch)return;
-  const previewKey=nativeEncodingKey(`${epoch}:${selectedSource}`,{...captureQuality,codec:localCodecSupport.hevcAvailable && localHostPlatform!=='darwin'?captureQuality.codec || 'h264':'h264'});
+  const settings=hostScreenQuality('');
+  const quality={...settings,codec:localCodecSupport.hevcAvailable && localHostPlatform!=='darwin'?settings.codec || 'h264':'h264'};
+  const previewKey=nativeEncodingKey(`${epoch}:${selectedSource}`,quality);
   if(nativePreview?.encodingKey===previewKey && !['failed','closed'].includes(nativePreview.connectionState))return;
   let offer;
-  try{offer=await nativeCommand('native-offer','preview',{quality:{...captureQuality,codec:localCodecSupport.hevcAvailable && localHostPlatform!=='darwin'?captureQuality.codec || 'h264':'h264'}});}
-  catch(error){if(epoch!==captureEpoch)return;if(captureQuality.codec!=='h265')throw error;captureQuality={...captureQuality,codec:'h264'};$('#streamCodec').value='h264';offer=await nativeCommand('native-offer','preview',{quality:captureQuality});hostStatus('H.265 could not start. Using H.264.');}
+  try{offer=await nativeCommand('native-offer','preview',{quality});}
+  catch(error){if(epoch!==captureEpoch)return;if(quality.codec!=='h265')throw error;captureQuality={...captureQuality,codec:'h264'};$('#streamCodec').value='h264';offer=await nativeCommand('native-offer','preview',{quality:{...quality,codec:'h264'}});hostStatus('H.265 could not start. Using H.264.');}
   if(epoch!==captureEpoch || !nativeCapture)return;
   nativeAudioReady=offer.audioAvailable===true;nativeAudioError=offer.audioError || '';
   activeNativeEncoder=offer.encoder || activeNativeEncoder;
   nativeCaptureDescription=`${offer.capture || 'Native capture'} · ${offer.encoder || 'hardware encoder'} · ${offer.scaling || 'source-sized video'}. Adjust resolution and frame rate in the stream settings.`;
   captureSetupUI();
-  nativeSource = { ...offer.sourceSize, frameRate: captureQuality.frameRate };
+  nativeSource = { ...offer.sourceSize, frameRate: settings.frameRate };
   nativePreview?.close(); nativePreview = null;
   if (!nativeCapture || !previewWanted()) { $('#hostPreview').srcObject = null; await nativeCommand('native-close','preview'); hostSharingUI(nativeCapture); desktopAvailability(); return; }
   const pc = hostConnectionReports.track(new RTCPeerConnection({ iceServers: [] }),'preview'); nativePreview = pc;pc.encodingKey=previewKey;
@@ -896,9 +1115,21 @@ setInterval(async()=>{
 const recoveringPeers = new Set();
 const pendingIce = new Map();
 const registrations = new Map(), invitations = new Map();
+const cancelledInvitations = new Set();
 let lastInvitation, lastReply,clientReplyEpoch=0,invitationPreparation=null;
+let clientReplyExpiryTimer;
+const inviteCode=pairingId=>pairingId.slice(0,8);
+function selectHostInvitation({packet,role}){
+  lastInvitation=packet;
+  $('#hostInviteCard').dataset.inviteAccess=role==='watch'?'Just watching':'Play';
+  $('#hostInvitation').value=JSON.stringify(packet,null,2);
+  $('#downloadInvitation').disabled=false;
+  $('#copyInvitation').disabled=false;
+  pairingUI('host','ready');
+  $('#hostPairStatus').textContent=`Invite ${inviteCode(packet.pairingId)} ready to send.`;
+}
 function expireInvitation(pairingId) {
-  const pending=invitations.get(pairingId);if(!pending)return;
+  const pending=invitations.get(pairingId);if(!pending || pending.accepting)return;
   invitations.delete(pairingId);clearTimeout(pending.p.expiryTimer);updateInviteExpiry();
   send(hostWs,{type:'kick',peerId:pending.peerId});
   if(lastInvitation?.pairingId===pairingId) {
@@ -908,17 +1139,72 @@ function expireInvitation(pairingId) {
     $('#hostPairStatus').textContent='This invite expired before connecting. Create a fresh invite and send it to your guest.';
   }
 }
+function cancelHostInvitation(entry){
+  const id=entry.packet.pairingId;
+  if(!entry.p.waitingForReply || invitations.get(id)!==entry)return;
+  if(entry.accepting || invitationPreparation){toast('Wait for the current invite or reply to finish.');return;}
+  if(entry.packet.expiresAt<=Date.now()){expireInvitation(id);return;}
+  invitations.delete(id);
+  cancelledInvitations.add(id);
+  send(hostWs,{type:'kick',peerId:entry.peerId});
+  closeHostPeer(entry.peerId);
+  if(lastInvitation===entry.packet){
+    const next=[...invitations.values()].reverse().find(item=>item.p.waitingForReply && item.packet.expiresAt>Date.now());
+    if(next)selectHostInvitation(next);
+    else{
+      $('#downloadInvitation').disabled=true;$('#copyInvitation').disabled=true;$('#hostInvitation').value='';
+      pairingUI('host','cancelled');
+    }
+  }
+  pairingFeedback('host');
+  $('#hostPairStatus').textContent=`Invite ${inviteCode(id)} cancelled.`;
+  updateInviteExpiry();renderPeers();
+  const focus=$('#hostPendingInvites').hidden?$('#newInvitation'):$('#hostPendingInvitesSummary');
+  focus.focus({preventScroll:true});
+}
 function updateInviteExpiry() {
-  const previousCount=$('#hostInviteCard').dataset.pending;
-  $('#hostInviteCard').dataset.pending=String(invitations.size);
-  $('#hostReplyStep').hidden=!invitations.size;
-  if(previousCount!==String(invitations.size))tutorialEvent('refresh');
+  const pendingFiles=[...invitations.values()].filter(entry=>entry.p.waitingForReply);
+  const card=$('#hostInviteCard'),count=String(pendingFiles.length),previousCount=card.dataset.pending;
+  card.dataset.pending=count;
+  $('#hostReplyStep').hidden=!pendingFiles.length;
+  const history=$('#hostPendingInvites'),list=$('#hostPendingInviteList');
+  const visible=pendingFiles.length>0;
+  history.hidden=!visible;
+  if(!visible)history.open=false;
+  const summary=`Waiting for ${count} ${count==='1'?'reply':'replies'}`;
+  if($('#hostPendingInvitesSummary').textContent!==summary)$('#hostPendingInvitesSummary').textContent=summary;
+  const signature=pendingFiles.map(entry=>entry.packet.pairingId).join(',')+`:${lastInvitation?.pairingId || ''}`;
+  if(list.dataset.signature!==signature){
+    list.dataset.signature=signature;
+    list.replaceChildren(...pendingFiles.map(entry=>{
+      const item=document.createElement('li'),label=document.createElement('span'),actions=document.createElement('div'),show=document.createElement('button'),cancel=document.createElement('button');
+      const code=inviteCode(entry.packet.pairingId);
+      label.textContent=`${entry.role==='watch'?'Watch':'Play'} · ${code}`;
+      show.type='button';show.className='button small-button';
+      show.disabled=entry.packet===lastInvitation;
+      show.textContent=show.disabled?'Selected':'Use invite';
+      show.setAttribute('aria-label',`${show.disabled?'Selected invite':'Use invite'} ${code}`);
+      show.onclick=()=>{
+        if(entry.packet.expiresAt<=Date.now()){expireInvitation(entry.packet.pairingId);return;}
+        if(invitationPreparation || !invitations.has(entry.packet.pairingId))return;
+        selectHostInvitation(entry);updateInviteExpiry();
+        const download=$('#createInvitation');
+        download.focus({preventScroll:true});download.scrollIntoView({block:'nearest'});
+      };
+      cancel.type='button';cancel.className='button small-button';cancel.textContent='Cancel';
+      cancel.setAttribute('aria-label',`Cancel invite ${code}`);
+      cancel.onclick=()=>cancelHostInvitation(entry);
+      actions.append(show,cancel);item.append(label,actions);return item;
+    }));
+  }
+  if(previousCount!==count)tutorialEvent('refresh');
   const pending=hostRoom && invitations.get(lastInvitation?.pairingId);
   $('#hostInviteExpiry').hidden=!pending;
   if(!pending)return;
   const seconds=Math.max(0,Math.ceil((pending.p.expiresAt-Date.now())/1000));
-  if(!seconds){expireInvitation(pending.p.pairingId);$('#hostInviteExpiry').hidden=true;return;}
-  $('#hostInviteExpiry').textContent=`Invite expires in ${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,'0')}. Keep this page open.`;
+  if(!seconds && !pending.accepting){expireInvitation(pending.p.pairingId);return;}
+  if(pending.accepting){$('#hostInviteExpiry').textContent=`Accepting reply for invite ${inviteCode(pending.packet.pairingId)}…`;return;}
+  $('#hostInviteExpiry').textContent=`Invite ${inviteCode(pending.packet.pairingId)} expires in ${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,'0')}.`;
 }
 setInterval(updateInviteExpiry,1000);
 let driverReady=null;
@@ -926,37 +1212,78 @@ function showDriver(driver) {
   driverReady=driver?.ready===true;
   $('#driverStatus').textContent = driver?.ready ? `${driver.backend} — ready` : `Controller unavailable: ${driver?.error || 'not initialized'}. See setup instructions. Video can still stream.`;
   $('#driverNotice').hidden = !!driver?.ready;
+  refreshHostControllerChecks();
 }
-function releasePeer(peerId) { inputStreams?.releaseControllers(peerId);send(injectWs, { type: 'release', peerId }); }
+function refreshHostControllerChecks() {
+  if (!$('#hostControllerHelp')?.open) return;
+  const now = Date.now();
+  for (const row of $('#peerList').children) {
+    const peer = hostPeers.get(row.dataset.peerId);
+    if (!peer) continue;
+    for (const indicator of row.querySelectorAll('.host-input-check')) {
+      const receipt = peer.controllerChecks?.get(indicator.dataset.slot);
+      const current = receipt?.generation === (peer.generation || 0) && now - receipt.at < 2500;
+      const text = peer.pc.connectionState !== 'connected' ? 'Guest disconnected'
+        : driverReady === false ? 'Host controller output unavailable'
+        : peer.controllerPresence?.enabled === false ? 'Sharing paused by guest'
+        : !current ? 'Waiting for input from guest'
+        : now - receipt.pressAt < 6000 ? 'Input reached the host' : 'Ask the guest to press a button';
+      if (indicator.textContent !== text) indicator.textContent = text;
+    }
+  }
+}
+setInterval(refreshHostControllerChecks, 1000);
+$('#hostControllerHelp').addEventListener('toggle', refreshHostControllerChecks);
+function releasePeer(peerId) {
+  hostPeers.get(peerId)?.controllerChecks?.clear();
+  hostPeers.get(peerId)?.controllerStates?.clear();
+  inputStreams?.releaseControllers(peerId);
+  send(injectWs, { type: 'release', peerId });
+}
+function announceControllerOutputs(){
+  if(!hostRoom || hostRoom.controllerOutputsActive)return;
+  hostRoom.controllerOutputsActive=true;
+  for(const peer of hostPeers.values()){
+    if(peer.control?.readyState==='open')peer.control.send(JSON.stringify({type:'controller-outputs-active'}));
+  }
+}
 function closeHostPeer(peerId) {
   inputStreams?.hostRemove(peerId);
   hostDiagnostics.removeSource(peerId);
   const p = hostPeers.get(peerId); if (!p) return;
   hostViewPopouts.closePeer(p);
   hostVoice.removeControl(peerId);hostCamera.removeControl(peerId);hostScreens.removeControl(peerId);hostChat.removePeer(peerId);
-  stopPeerVideo(p); releasePeer(peerId); hostPeers.delete(peerId); clearTimeout(p.recovery); clearTimeout(p.expiryTimer); clearTimeout(p.updateTimeout); clearTimeout(p.fallbackTimer); clearTimeout(p.nativeTimeout);p.grace?.stop(); p.pc.close();
-  if (p.pairingId) invitations.delete(p.pairingId);
+  stopPeerVideo(p); releasePeer(peerId); hostPeers.delete(peerId); clearTimeout(p.recovery); clearTimeout(p.expiryTimer); clearTimeout(p.updateTimeout); clearTimeout(p.fallbackTimer); clearTimeout(p.nativeTimeout);clearTimeout(p.qualityRequestTimer);p.grace?.stop(); p.pc.close();
+  if(p.pairingId && invitations.delete(p.pairingId)){
+    if(lastInvitation?.pairingId===p.pairingId && hostRoom && !hostEnding){
+      $('#downloadInvitation').disabled=true;$('#copyInvitation').disabled=true;$('#hostInvitation').value='';
+      pairingUI('host','connected');$('#hostPairStatus').textContent='Invite closed. Create a new invite to use in its place.';
+    }
+    updateInviteExpiry();
+  }
   hostCursors.remove(peerId);
   if (p.nativeKey) nativeCommand('native-close', peerId).catch(() => {});
 }
 function renderPeers() {
   const active=document.activeElement,focused=active?.closest('#peerList .peerRow')?{peerId:active.closest('.peerRow').dataset.peerId,key:active.dataset.peerAction || active.getAttribute('aria-label') || active.textContent}:null;
   const openMenus=new Set([...$('#peerList').querySelectorAll('.peerRow')].filter(row=>row.querySelector('.peer-menu')?.open).map(row=>row.dataset.peerId));
+  const openTests=new Set([...$('#peerList').querySelectorAll('.guest-controller .pad-live-test[open]')].map(test=>`${test.closest('.peerRow').dataset.peerId}:${test.dataset.slot}`));
   $('#peerList').replaceChildren();
   let summary=$('#hostControllerSummary');if(!summary){summary=document.createElement('p');summary.id='hostControllerSummary';summary.className='small';$('#peerList').before(summary);}
   const joined=[...hostPeers.values()].reduce((sum,p)=>sum+(p.slots?.length || 0),0);
   summary.textContent=`${joined} guest controller${joined===1?'':'s'} joined`;summary.hidden=!joined && ![...hostPeers.values()].some(p=>p.wantsController);
-  $('#hostPeopleCard > details.advanced').hidden=summary.hidden;
   peopleUI([...hostPeers.values()].filter(p => p.pc.connectionState === 'connected').length);
   refreshPlayerCapacity();
   if (!hostPeers.size) { const empty = document.createElement('p'); empty.className = 'empty-people'; empty.textContent = 'Your friends will appear here when they join.'; $('#peerList').append(empty); }
   for (const [id, p] of hostPeers) {
     const row = document.createElement('div'); row.className = 'peerRow';row.dataset.peerId=id;
     row.dataset.connection=p.pc.connectionState;row.dataset.wantsController=String(p.wantsController===true);row.dataset.controllers=String(p.slots?.length || 0);row.dataset.controllerError=String(!!p.controllerError);
+    const waitingForReply = p.waitingForReply === true && !p.pc.remoteDescription;
+    row.dataset.waitingForReply = String(waitingForReply);
     const avatar = document.createElement('span'); avatar.className = 'avatar friend'; avatar.textContent = p.slot ? p.slot.slice(1) : 'W'; avatar.style.border = `2px solid ${cursorColor(id,p.slot)}`;
     const label = document.createElement('div'); label.className = 'peer-info'; label.textContent = p.sessionName || `Guest ${p.diagnosticNumber ??= ++diagnosticGuestNumber}`;
-    const count=p.slots?.length || 0;
-    const caption = document.createElement('button');caption.type='button';caption.dataset.peerAction='toggle-controllers'; caption.className = 'person-caption guest-status-action'; caption.textContent = p.controllerError && p.pc.connectionState==='connected' && !count?'Host controller setup needed':guestCaption({state:p.pc.connectionState,count,detected:p.controllerPresence?.detected,enabled:p.controllerPresence?.enabled!==false,wantsController:p.wantsController,setupRequired:p.controllerPresence?.setupRequired});
+    const controllerStatus=guestControllerStatus(p);
+    const caption = document.createElement('button');caption.type='button';caption.dataset.peerAction='toggle-controllers'; caption.className = 'person-caption guest-status-action'; caption.textContent = guestCaption(controllerStatus);
     caption.setAttribute('aria-expanded',String(p.controllersExpanded!==false));caption.setAttribute('aria-label',`${caption.textContent}. Show or hide these controllers`);caption.onclick=()=>{p.controllersExpanded=p.controllersExpanded===false;controllers.hidden=!p.controllersExpanded;caption.setAttribute('aria-expanded',String(p.controllersExpanded));};
     label.append(caption); row.append(avatar, label);
     if(p.pc.connectionState==='failed'){
@@ -981,15 +1308,33 @@ function renderPeers() {
       b.onclick = () => {if(p.sessionGuestId)sessionInvites.rejectGuest(p.sessionGuestId);send(hostWs, { type: slot === 'kick' ? 'kick' : 'force-assign', peerId: id, slot });}; extraActions.append(b);
     }
     const controllers=document.createElement('div');controllers.className='guest-controllers';controllers.hidden=p.controllersExpanded===false;
+    if (waitingForReply) {
+      const reply = document.createElement('button');
+      reply.type = 'button';
+      reply.className = 'button small-button';
+      reply.textContent = 'Drop their reply file here or click to open';
+      const code=document.createElement('span');code.className='small muted';code.textContent=`Invite ${inviteCode(p.pairingId)}`;
+      reply.onclick = () => $('#hostReplyFile').click();
+      controllers.append(reply,code);
+    }
     for(const [lane,slot] of (p.slots || []).entries()){
       const device=p.controllerPresence?.controllers.find(item=>item.index===lane),item=document.createElement('div');item.className='guest-controller';item.dataset.player=slot;
-      const name=document.createElement('strong');name.textContent=`${slot.toUpperCase()} · ${device?.name || 'Controller'}`;
-      const status=document.createElement('span');status.className='person-caption';status.textContent=p.pc.connectionState!=='connected'?'Not connected':!device?'Assigned':!device.connected?'Controller disconnected':p.controllerPresence.enabled?'Ready to play':'Sharing paused';
-      item.dataset.state=p.pc.connectionState!=='connected' || device?.connected===false?'disconnected':p.controllerPresence?.enabled?'ready':'paused';
-      const info=document.createElement('div');info.append(name,status);item.append(info);
-      const remove=document.createElement('button');remove.className='button small-button';remove.textContent=`Remove ${slot.toUpperCase()}`;remove.setAttribute('aria-label',`Remove guest controller ${slot.toUpperCase()}`);remove.onclick=()=>send(hostWs,{type:'controller-remove',peerId:id,controller:lane,slot,generation:p.generation || 0});item.append(remove);controllers.append(item);
+      const name=document.createElement('strong'),label=device?.name || 'Controller';
+      name.textContent=`${slot.toUpperCase()} · ${friendlyControllerName(label)}`;
+      if(device?.name)name.title=device.name;
+      const status=document.createElement('span');status.className='person-caption';
+      const presentation=guestPadStatus(p,device);status.textContent=presentation.text;item.dataset.state=presentation.state;
+      const check = document.createElement('span');
+      check.className = 'host-input-check person-caption';
+      check.dataset.slot = slot;
+      const info=document.createElement('div');info.append(name,status,check);item.append(info);
+      item.append(controllerRemove(id,p,slot));
+      const test=addControllerTest(item);test.dataset.slot=slot;test.dataset.peerId=id;
+      test.open=openTests.has(`${id}:${slot}`);
+      controllers.append(item);
     }
-    if(!p.slots?.length && p.pc.connectionState==='connected' && p.wantsController){const note=document.createElement('p');note.className='small muted';note.textContent=p.controllerError?'The guest selected a controller, but this host could not create it. Repair controller support on this computer.':p.controllerPresence?.setupRequired?'Ask this guest to open Controllers and choose “Use without local blocking” or set up blocking.':p.controllerPresence?.enabled===false?'Ask this guest to resume controller sharing.':p.controllerPresence?.detected?'Ask this guest to press a controller button or select its card in Controllers.':'Ask this guest to connect a controller and open Controllers to check it.';controllers.append(note);}
+    const guidance=guestControllerGuidance(controllerStatus);
+    if(guidance){const note=document.createElement('p');note.className='small muted';note.textContent=guidance;controllers.append(note);}
     if(p.controllerError){const failure=document.createElement('p');failure.className='input-caution';failure.textContent=`Host controller setup: ${p.controllerError}`;controllers.append(failure);}
     row.append(actions,controllers); $('#peerList').append(row);
     if (p.manual) {
@@ -1005,6 +1350,8 @@ function renderPeers() {
     const disconnect=extraActions.querySelector('[data-peer-disconnect]');if(disconnect)extraActions.append(disconnect);
   }
   participants?.sync();
+  renderHostGuestPads();
+  refreshHostControllerChecks();
   if(focused){const row=[...$('#peerList').querySelectorAll('.peerRow')].find(el=>el.dataset.peerId===focused.peerId),target=row && [...row.querySelectorAll('button,select,summary')].find(el=>(el.dataset.peerAction || el.getAttribute('aria-label') || el.textContent)===focused.key && !el.disabled);(target || row?.querySelector('summary') || $('#inviteFocus')).focus({preventScroll:true});}
 } 
 function connectInjector() {
@@ -1012,12 +1359,89 @@ function connectInjector() {
   if (!hostRoom || hostWs?.readyState !== WebSocket.OPEN) return;
   const ws = new WebSocket(socketUrl('/inject')); injectWs = ws;
   ws.onopen = () => send(ws, { type: 'auth', roomId: hostRoom.roomId, token: hostRoom.injectToken });
-  ws.onmessage = ev => { const msg = parse(ev.data); if (msg?.type === 'driver-status') showDriver(msg); if(msg?.type==='input-receipt') { const p=hostPeers.get(msg.peerId); if(p?.control?.readyState==='open') p.control.send(JSON.stringify(msg)); } };
+  ws.onmessage = ev => {
+    if (injectWs !== ws) return;
+    const msg = parse(ev.data);
+    if (msg?.type === 'driver-status') showDriver(msg);
+    if (msg?.type !== 'input-receipt') return;
+    const peer = hostPeers.get(msg.peerId);
+    if (!peer || peer.slots?.[msg.controller] !== msg.slot || (peer.generation || 0) !== msg.generation) return;
+    peer.controllerChecks ||= new Map();
+    const previous = peer.controllerChecks.get(msg.slot);
+    const now = Date.now();
+    const pressAt = msg.pressed === true ? now : previous?.generation === msg.generation ? previous.pressAt : 0;
+    peer.controllerChecks.set(msg.slot, { at: now, generation: msg.generation, pressAt });
+    refreshHostControllerChecks();
+    if (peer.control?.readyState === 'open') peer.control.send(JSON.stringify(msg));
+  };
   ws.onclose = () => {
     if (injectWs !== ws) return;
     $('#driverStatus').textContent = 'Controller bridge disconnected; reconnecting…';
     injectReconnect = setTimeout(connectInjector, 1000);
   };
+}
+function controllerRemove(peerId,peer,slot){
+  const button=document.createElement('button');
+  button.type='button';button.className='button small-button host-pad-remove';button.textContent='×';
+  button.setAttribute('aria-label',`Remove guest controller ${slot.toUpperCase()}`);
+  button.title='Remove controller';
+  button.onclick=()=>send(hostWs,{type:'controller-remove',peerId,slot,generation:peer.generation || 0});
+  return button;
+}
+function guestControllerStatus(peer){
+  const presence=peer.controllerPresence;
+  const count=peer.slots?.length || 0;
+  return {state:peer.pc.connectionState,count,detected:presence?.detected,enabled:presence?.enabled!==false,
+    wantsController:peer.wantsController,setupRequired:presence?.setupRequired,needsMapping:presence?.needsMapping,
+    pending:(presence?.controllers.length || 0)>count,error:!!peer.controllerError};
+}
+function guestPadStatus(peer,device){
+  if(peer.pc.connectionState!=='connected')return {state:'disconnected',text:'Not connected'};
+  if(device?.connected===false)return {state:'disconnected',text:'Controller disconnected'};
+  if(peer.controllerPresence?.enabled===false)return {state:'paused',text:'Sharing paused'};
+  return {state:'ready',text:device?'Joined':'Assigned'};
+}
+function guestControllerGuidance({state,count,detected,enabled,wantsController,setupRequired,needsMapping,pending,error}){
+  if(state!=='connected' || !wantsController)return '';
+  if(!count && error)return 'Repair controller support on this computer, then have the guest try again.';
+  if(!count && setupRequired)return 'Ask the guest to open Controllers and choose “Use without local blocking” or set up blocking.';
+  if(!enabled)return count?'':'Ask the guest to turn on Share controllers.';
+  if(needsMapping)return count || needsMapping===detected
+    ? 'Ask the guest to open Controllers, click Map beside the device, then save the layout and join.'
+    : 'In Controllers, the guest can join a ready device or click Map beside one that needs a layout.';
+  if(count || pending)return '';
+  return detected?'Ask the guest to press a controller button or click Join in Controllers.':'Ask the guest to connect a controller and open Controllers.';
+}
+function renderHostGuestPads(){
+  const root=$('#hostGuestPads');
+  if(!root.closest('.call-sheet')?.open)return;
+  const pads=[...hostPeers].flatMap(([id,p])=>(p.slots || []).map((slot,lane)=>{
+    const device=p.controllerPresence?.controllers.find(device=>device.index===lane);
+    return {id,p,slot,label:device?.name || 'Controller',guest:p.sessionName || `Guest ${p.diagnosticNumber || ''}`,
+      ...guestPadStatus(p,device)};
+  }));
+  const waiting=[...hostPeers.values()].filter(p=>p.pc.connectionState==='connected' && p.wantsController && (!p.slots?.length || p.controllerPresence?.enabled && p.controllerPresence.needsMapping)).map(p=>{
+    const status=guestControllerStatus(p);
+    return [p.sessionName || `Guest ${p.diagnosticNumber || ''}`,guestCaption(status),guestControllerGuidance(status)];
+  });
+  const signature=JSON.stringify([pads.map(({id,slot,label,guest,text})=>[id,slot,label,guest,text]),waiting]);
+  if(root.dataset.signature===signature)return;
+  const expanded=new Map([...root.querySelectorAll('.pad-live-test')].map(test=>[`${test.dataset.peerId}:${test.dataset.slot}`,test.open]));
+  root.dataset.signature=signature;
+  if(!pads.length && !waiting.length){root.textContent='No guest controllers joined.';return;}
+  root.replaceChildren(...pads.map(({id,p,slot,label,guest,state,text})=>{
+    const item=document.createElement('div'),info=document.createElement('div'),name=document.createElement('strong'),status=document.createElement('span');
+    item.className='guest-controller';item.dataset.state=state;name.textContent=`${slot.toUpperCase()} · ${friendlyControllerName(label)} · ${guest}`;
+    status.className='person-caption';status.textContent=text;
+    info.append(name,status);item.append(info,controllerRemove(id,p,slot));
+    const test=addControllerTest(item);test.dataset.peerId=id;test.dataset.slot=slot;test.open=expanded.get(`${id}:${slot}`) ?? pads.length===1;
+    return item;
+  }));
+  for(const [guest,status,guidance] of waiting){
+    const note=document.createElement('p');note.className='small muted host-guest-controller-status';
+    const title=document.createElement('strong');title.textContent=`${guest} · ${status}`;
+    note.append(title);if(guidance)note.append(document.createElement('br'),guidance);root.append(note);
+  }
 }
 async function recoverHostPeer(peerId) {
   if(hostEnding)return;
@@ -1082,7 +1506,10 @@ function hostChannel(p, id, ch) {
   }
   if (ch.label === 'control') {
     p.control = ch;ch.onclose=()=>{if(hostPeers.get(id)===p){hostVoice.removeControl(id);hostCamera.removeControl(id);hostScreens.removeControl(id);}};
-    ch.onopen = () => { inputStreams?.hostAttach(id,ch);reverseControllers?.hostAttach(id,ch);if(!p.handoff){hostVoice.addControl(id,voiceSend(ch));hostCamera.addControl(id,voiceSend(ch));hostScreens.addControl(id,voiceSend(ch));}ch.send(JSON.stringify({ type: 'slot', inputFormat:inputWireVersion, slot: p.slot, slots:p.slots, generation:p.generation || 0, capacity:hostRoom?.config.maxRemoteControllers,adaptiveControllers:hostRoom?.config.adaptiveControllers===true, controllerType:hostRoom?.config.controllerType,dynamicControllers:hostRoom?.config.dynamicControllers===true,wantsController:p.wantsController===true, cursorColor: cursorColor(id,p.slot) })); shareInputPolicy(p); shareCaptureInfo(p); shareQualityLimit(p); shareViews(p);renderPeers(); };
+    ch.onopen = () => { inputStreams?.hostAttach(id,ch);reverseControllers?.hostAttach(id,ch);if(!p.handoff){hostVoice.addControl(id,voiceSend(ch));hostCamera.addControl(id,voiceSend(ch));hostScreens.addControl(id,voiceSend(ch));}
+      const outputActive=hostRoom?.controllerOutputsActive || !hostRoom?.config.dynamicControllers || [...hostPeers.values()].some(peer=>peer.slots?.length);
+      ch.send(JSON.stringify({type:'controller-origin',instance:hostRoom?.controllerInstance,outputActive}));
+      ch.send(JSON.stringify({ type: 'slot', inputFormat:inputWireVersion, slot: p.slot, slots:p.slots, generation:p.generation || 0, capacity:hostRoom?.config.maxRemoteControllers,adaptiveControllers:hostRoom?.config.adaptiveControllers===true, controllerType:hostRoom?.config.controllerType,dynamicControllers:hostRoom?.config.dynamicControllers===true,wantsController:p.wantsController===true, cursorColor: cursorColor(id,p.slot) })); shareInputPolicy(p); shareCaptureInfo(p); shareQualityLimit(p); shareViews(p);renderPeers(); };
     let queue = Promise.resolve();
     ch.onmessage = e => {
       // Video signaling must not hold up the control latency probe.
@@ -1091,7 +1518,7 @@ function hostChannel(p, id, ch) {
       if(probe?.type==='session-ended-ack'){if(hostPeers.get(id)===p && probe.id===p.endRequest)p.endAcknowledged?.();return;}
       if(hostEnding)return;
       if(probe?.type==='host-handoff'){if(hostPeers.get(id)===p || handoff.owns(ch))handoff.receive(id,probe,ch);return;}
-      if(probe?.type==='host-capability'){if(hostPeers.get(id)===p){p.canHost=probe.enabled===true;renderPeers();}return;}
+      if(probe?.type==='host-capability'){if(hostPeers.get(id)===p){p.canHost=probe.enabled===true;p.localHandoff=probe.local===true;renderPeers();}return;}
       if(probe?.type==='screen'){if(hostPeers.get(id)===p)hostScreens.receive(id,probe);return;}
       if(probe?.type==='camera'){if(hostPeers.get(id)===p)hostCamera.receive(id,probe);return;}
       if(probe?.type==='voice'){if(hostPeers.get(id)===p)hostVoice.receive(id,probe);return;}
@@ -1116,21 +1543,30 @@ function hostChannel(p, id, ch) {
       }
       if (msg?.type === 'browser-restart') { await startBrowserPeer(p, true);await startHybridAudioPeer(p); return; }
       if (msg?.type === 'quality-request') {
+        const requested=clientQuality(msg.quality);
+        if(p.qualityRequested && JSON.stringify(p.requestedQuality)===JSON.stringify(requested))return;
+        p.qualityRequested=true;
         p.nativeCodecUnavailable=false;
-        p.requestedQuality = clientQuality(msg.quality); p.adaptation = {};
-        await applyPeerQuality(p); return;
+        p.requestedQuality = requested; p.adaptation = {};
+        clearTimeout(p.qualityRequestTimer);
+        p.qualityRequestTimer=setTimeout(()=>{
+          if(hostPeers.get(id)!==p || ch.readyState!=='open')return;
+          Promise.all([hostViewPopouts.refreshQuality(p),applyPeerQuality(p)]).catch(error=>hostStatus(error.message));
+        },100);
+        return;
       }
       if (msg?.type === 'stream-metrics') {
         p.cameraPressureAt=performance.now();p.cameraPressure=Object.fromEntries(['loss','rttMs','bufferMs','freezeMs','decodeMs'].map(k=>[k,typeof msg.metrics?.[k]==='number' && Number.isFinite(msg.metrics[k])?Math.max(0,Math.min(k==='loss'?1:5000,msg.metrics[k])):0]));
         if(Date.now()-(p.lastDiagnostic || 0)>=1000){p.lastDiagnostic=Date.now();hostDiagnostics.record({...msg.metrics,lossPercent:typeof msg.metrics?.loss==='number'?msg.metrics.loss*100:null},{source:id,label:`Guest ${p.diagnosticNumber ??= ++diagnosticGuestNumber}`});}
-        const automatic = captureQuality.autoThrottle !== false && p.requestedQuality?.automatic !== false;
+        const host=hostScreenQuality(p.videoSourceId),source=sourceSettings(p.videoSourceId);
+        const automatic = host.autoThrottle !== false && p.requestedQuality?.automatic !== false;
         if (!automatic || p.nativeBusy || p.nativeNegotiation || p.nativePresentationId || Date.now()-(p.mediaSettledAt || 0)<4000 || Date.now() - (p.lastMetrics || 0) < 1000 || Date.now() - p.createdAt < 8000) return;
         p.lastMetrics = Date.now();
-        const metrics = Object.fromEntries(['loss', 'rttMs', 'bufferMs', 'freezeMs'].map(key => [key, typeof msg.metrics?.[key] === 'number' && Number.isFinite(msg.metrics[key]) ? Math.max(0, Math.min(key === 'loss' ? 1 : 5000, msg.metrics[key])) : 0]));
-        const ceiling = effectiveQuality(captureQuality, p.requestedQuality, sourceSettings(p)).height || sourceSettings(p).height || 2160;
-        const previous = p.adaptation?.height;
-        p.adaptation = adaptQuality(p.adaptation, metrics, ceiling,Date.now(),qualityFloor(captureQuality,p.requestedQuality,sourceSettings(p)));
-        if (previous !== p.adaptation.height) await applyPeerQuality(p);
+        const metrics = adaptationMetrics(msg.metrics);
+        const limits=effectiveQuality(host,p.requestedQuality,source);
+        const previous=p.adaptation;
+        p.adaptation=adaptQuality(previous,metrics,limits.height || source.height || 2160,Date.now(),limits.minHeight,limits);
+        if(previous?.height!==p.adaptation.height || previous?.frameRate!==p.adaptation.frameRate)await applyPeerQuality(p);
         return;
       }
       if (msg?.type === 'native-answer' && msg.id === p.nativeNegotiation) {
@@ -1139,7 +1575,11 @@ function hostChannel(p, id, ch) {
       if (msg?.type === 'native-restart') { p.nativeKey = null; await startNativePeer(p, true); return; }
       if(msg?.type==='native-presented' && msg.id===p.nativePresentationId){await nativeCommand('native-ready',id,{sourceId:p.nativeSourceId});p.nativePresentationId=null;p.mediaSettledAt=Date.now();clearTimeout(p.nativeTimeout);if(p.nativeAgain){p.nativeAgain=false;await startNativePeer(p);}return;}
       if(msg?.type==='controller-remove'){send(hostWs,{type:'controller-remove',peerId:id,controller:msg.controller,generation:msg.generation});return;}
-      if (msg?.type === 'controller-count') { send(hostWs,{type:'controller-count',peerId:id,count:Math.min(hostRoom?.config.adaptiveControllers?Infinity:hostRoom?.config.maxRemoteControllers ?? hostSlots.length,Math.max(hostRoom?.config.dynamicControllers?0:1,Number.isInteger(msg.count)?msg.count:1))}); return; }
+      if (msg?.type === 'controller-count') {
+        const count=Math.min(hostRoom?.config.adaptiveControllers?Infinity:hostRoom?.config.maxRemoteControllers ?? hostSlots.length,Math.max(hostRoom?.config.dynamicControllers?0:1,Number.isInteger(msg.count)?msg.count:1));
+        if(count>(p.slots?.length || 0))announceControllerOutputs();
+        send(hostWs,{type:'controller-count',peerId:id,count});return;
+      }
       if (msg?.type === 'release') { if(Number.isSafeInteger(msg.seq)) { p.lastSeq=Math.max(p.lastSeq,msg.seq); p.lastSeqs=(p.slots || []).map((_,i)=>Math.max(p.lastSeqs?.[i] ?? -1,msg.seq)); } releasePeer(id); }
       if (msg?.type === 'desktop-release') {send(injectWs,{type:'desktop-release',peerId:id,seq:msg.seq});hostCursors.remove(id);send(hostWs,{type:'overlay-remove',peerId:id});for(const peer of hostPeers.values())if(peer!==p && peer.desktopChannel?.readyState==='open')peer.desktopChannel.send(JSON.stringify({type:'cursor-hidden',peerId:id}));}
       if (msg?.type === 'bye') send(hostWs, { type: 'kick', peerId: id });
@@ -1157,7 +1597,12 @@ function hostChannel(p, id, ch) {
   ch.onmessage = ev => {
     if (hostEnding || hostPeers.get(id) !== p || typeof ev.data==='string' && ev.data.length>4096) return;
     const msg = typeof ev.data==='string'?parse(ev.data):decodeInputPacket(ev.data);
-    if (acceptInput(p, msg) && ['keyboard', 'gamepad'].includes(msg.source) && (msg.source !== 'keyboard' || keyboardAllowed)){inputStreams?.controller(id,msg);send(injectWs, { type: 'state', peerId: id, controller:msg.controller ?? 0, generation:msg.generation ?? 0, source: msg.source, state: msg.state });}
+    if (acceptInput(p, msg) && ['keyboard', 'gamepad'].includes(msg.source) && (msg.source !== 'keyboard' || keyboardAllowed)){
+      p.controllerStates ||= new Map();
+      p.controllerStates.set(p.slots[msg.controller ?? 0],{at:performance.now(),state:msg.state});
+      inputStreams?.controller(id,msg);
+      send(injectWs, { type: 'state', peerId: id, controller:msg.controller ?? 0, generation:msg.generation ?? 0, source: msg.source, state: msg.state });
+    }
   };
   ch.onclose = () => { if (hostPeers.get(id) === p && p.channel === ch) { releasePeer(id); if (p.fallbackReady) recoverHostPeer(id); } };
 }
@@ -1199,7 +1644,7 @@ async function makeHostPeer(id, slot, manual = false, config, ownership, transpo
   }
   renderPeers(); return p;
 }
-function hostStartPending(value){const button=$('#hostCreate');button.setAttribute('aria-busy',String(value));button.innerHTML=`${value?'Starting session…':'Start a session'} <svg class="icon"><use href="#i-arrow"/></svg>`;}
+function hostStartPending(value){const button=$('#hostCreate');button.setAttribute('aria-busy',String(value));button.innerHTML=`${value?'Starting…':'Start session'} <svg class="icon" aria-hidden="true"><use href="#i-arrow"/></svg>`;}
 async function connectHost(previewOnly=false) {
   if(!previewOnly)hostStartPending(true);
   nativeGuest.releaseForHost();
@@ -1212,27 +1657,39 @@ async function connectHost(previewOnly=false) {
   ws.starting=!previewOnly;
   ws.onopen = () => {if(!previewOnly)send(ws,command());};
   let queue = Promise.resolve();
-  ws.onmessage = ev => { queue = queue.then(async () => {
+  ws.onmessage = ev => {
     if (hostWs !== ws) return;
     const msg = parse(ev.data); if (!msg) return;
+    // Request replies must stay readable while ordinary signaling awaits other work.
     if (msg.type === 'native-result') {
-      const pending = nativeRequests.get(msg.requestId); if (!pending) return;
+      const pending = nativeRequests.get(msg.requestId); if (pending?.ws!==ws) return;
       nativeRequests.delete(msg.requestId); clearTimeout(pending.timer);
       if (msg.error) pending.reject(new Error(msg.error)); else pending.resolve(msg.result); return;
     }
+    if(msg.type==='handoff-transferred'){
+      const s=handoff.state;
+      if(s?.local && s.old.ws===ws && s.ticket===msg.ticket)s.transferred=true;
+      return;
+    }
+    queue = queue.then(async () => {
+    if (hostWs !== ws) return;
     if(msg.type==='capture-source-ended'){setTimeout(()=>stopCapture().catch(e=>hostStatus(e.message)),0);return;}
     if(msg.type==='capture-resized') {
       setTimeout(()=>{qualityQueue=qualityQueue.catch(()=>{}).then(async()=>{if(!nativeCapture)return;nativePreview?.close();nativePreview=null;for(const p of hostPeers.values()){if(p.videoSourceId)continue;p.nativeKey=null;p.nativeNegotiation=null;p.nativePresentationId=null;clearTimeout(p.nativeTimeout);}await startNativePreview();await updateCapture();streamInfo(nativeSource);}).catch(e=>hostStatus(`Window resized: ${e.message}`));},0);return;
     }
     if (msg.type === 'native-status') {
       if(msg.event==='handover-timeout') {
+        if(hostViewPopouts.rollback(msg.peerId,msg.sourceId || ''))return;
         const p=hostPeers.get(msg.peerId);
         if(p && (p.nativeSourceId || '')===(msg.sourceId || '')) {
           clearTimeout(p.nativeTimeout);p.nativeNegotiation=null;p.nativePresentationId=null;p.nativeKey=null;p.nativeAgain=false;
           if(p.control?.readyState==='open')p.control.send(JSON.stringify({type:'native-rollback'}));
           hostStatus('The quality change could not finish. Keeping the previous stream.');
         }
-      }else if(msg.event==='audio-error'){nativeAudioReady=false;nativeAudioError=msg.error;captureSetupUI();for(const p of hostPeers.values())shareCaptureInfo(p);hostStatus(`Audio stopped: ${msg.error}. Video and controllers remain available.`);}else if (msg.event === 'error') hostStatus(msg.error);
+      }else if(msg.event==='audio-error'){
+        if(msg.sourceId)hostShares.audioFailed(hostShares.get(msg.sourceId),msg.error);
+        else {nativeAudioReady=false;nativeAudioError=msg.error;captureSetupUI();publishScreenAudio('').catch(()=>{});hostStatus(`Audio stopped: ${msg.error}. Video and controllers remain available.`);}
+      }else if (msg.event === 'error') hostStatus(msg.error);
       return;
     }
     if (msg.type === 'error') {ws.lastError=msg.error;desktopPolicyPending = false; desktopAvailability(); hostStatus(msg.error); if (!ws.roomReady) ws.close(); return; }
@@ -1253,13 +1710,17 @@ async function connectHost(previewOnly=false) {
       for (const id of hostPeers.keys()) closeHostPeer(id);
       for (const p of msg.peers || []) { const peer=await makeHostPeer(p.peerId,p.slot,false,undefined,p); peer.slots=p.slots || (p.slot?[p.slot]:[]); peer.generation=p.generation || 0; }
       renderPeers();
-      // Native commands receive replies on this queue, so start capture after this message completes.
-      if(selectedSource==='none')applyPreparedDesktop();
-      if(selectedSource!=='none') {
-        const room=hostRoom;
-        if(msg.previewAdopted && nativeCapture){hostSharingUI(true);streamInfo(nativeSource);applyPreparedDesktop();}
-        else setTimeout(()=>{if(hostRoom===room){if(audioOnly() && selectedSource==='audio-only')configureHybridAudio().then(applyPreparedDesktop).catch(error=>hostStatus(error.message));else startCapture(true);}},0);
-      }
+      // Carry over a preview the host opened. Remembered sources are only suggestions.
+      if(msg.previewAdopted && nativeCapture){hostSharingUI(true);streamInfo(nativeSource);applyPreparedDesktop();}
+      else if(hostMediaActive()){
+        const room=hostRoom,epoch=captureEpoch;
+        // Native command replies are processed by this message queue.
+        setTimeout(()=>{
+          if(hostRoom!==room || epoch!==captureEpoch || !hostMediaActive())return;
+          if(audioOnly() && hybridAudioSource)configureHybridAudio().then(applyPreparedDesktop).catch(error=>hostStatus(error.message));
+          else startCapture(true,{allowPicker:false});
+        },0);
+      }else applyPreparedDesktop();
       return;
     }
     if(msg.type==='rumble'){const p=hostPeers.get(msg.peerId);if(p?.control?.readyState==='open' && p.control.bufferedAmount<8192)p.control.send(JSON.stringify(msg));return;}
@@ -1307,10 +1768,11 @@ async function connectHost(previewOnly=false) {
     }
   }).catch(error => hostStatus(`Connection error: ${error.message}`)); };
   ws.onclose = () => {
+    for(const [id,request] of nativeRequests)if(request.ws===ws){clearTimeout(request.timer);request.reject(Error('Host session ended'));nativeRequests.delete(id);}
     if (hostWs !== ws) return;
+    if(handoff.state?.transferred && handoff.state.old.ws===ws)return;
     handoff.cancel('Host disconnected. The host switch was cancelled.');
     ws.starting=false;hostStartPending(false);$('#hostEnd').setAttribute('aria-busy','false');if($('#hostEnd span'))$('#hostEnd span').textContent='Stop session';
-    for (const request of nativeRequests.values()) { clearTimeout(request.timer); request.reject(new Error('Host session ended')); } nativeRequests.clear();
     nativeCapture = false; nativePreview?.close(); nativePreview = null;
     hostRoom = null;hostVoice.setReady(false);hostCamera.setReady(false);hostScreens.setReady(false);hostChat.setReady(false);
     clearPreparedDesktop();hostOverlayActive=false;hostOverlayPending=null;hostDesktopPolicy = { desktopMouse: false, desktopKeyboard: false }; desktopPolicyPending = false; desktopAvailability(); hostCursors.clear(); 
@@ -1319,9 +1781,9 @@ async function connectHost(previewOnly=false) {
     clearTimeout(injectReconnect); injectWs?.close(); injectWs = null;
     for (const id of hostPeers.keys()) closeHostPeer(id);
     pendingIce.clear(); renderPeers(); $('#hostCreate').disabled = false; $('#hostEnd').disabled = true; $('#createInvitation').disabled = true;
-    lastInvitation=null;$('#hostInvitation').value='';$('#downloadInvitation').disabled=true;$('#copyInvitation').disabled=true;updateInviteExpiry();pairingFeedback('host');
+    lastInvitation=null;cancelledInvitations.clear();$('#hostInvitation').value='';$('#downloadInvitation').disabled=true;$('#copyInvitation').disabled=true;updateInviteExpiry();pairingFeedback('host');
     stopCapture().then(()=>{if(ws.roomReady && !hostRoom && document.body.dataset.mode==='host'){lastSharePending=!!lastHostSetup?.source;restoreLastShareSource();renderCaptureSources();}}).catch(error=>hostStatus(error.message));
-    hostSessionUI(false);hostShares.setActive(false);
+    resetScreenOverrides();hostSessionUI(false);hostShares.setActive(false);updateScreenOverrides();
     sessionInvites.endHosting();sessionGuestPeers.clear();
   };
   if(previewOnly)await new Promise((resolve,reject)=>{ws.addEventListener('open',resolve,{once:true});ws.addEventListener('error',()=>reject(new Error('Could not connect to the local preview service')),{once:true});ws.addEventListener('close',()=>reject(new Error('Local preview service closed')),{once:true});});
@@ -1330,9 +1792,6 @@ $('#hostCreate').onclick = async () => {
   if(captureBusy)return;
   $('#hostCreate').disabled=true;hostStartPending(true);
   try {
-    if(captureBusy)return;
-    if(rememberedBrowserShare && !captureStream){if(!await startCapture())return;rememberedBrowserShare=false;}
-    if(selectedSource==='browser-selected' && captureStream?.getVideoTracks()[0]?.readyState!=='live' && !await startCapture())return;
     rememberHostSetup();
     await connectHost();
   } catch(error) {hostStatus(error.message);}
@@ -1362,19 +1821,25 @@ async function registerManualPeer(role) {
     send(hostWs, { type: 'register-peer', role, requestId });
   });
 }
-async function prepareInvitation(fresh=false,role=$('#invitationRole').value) {
-  if(invitationPreparation){const packet=await invitationPreparation;return fresh?prepareInvitation(true,role):packet;}
+async function prepareInvitation(fresh=false,role=$('#invitationRole').value,automaticReply=false) {
+  const room=hostRoom,ws=hostWs;
+  if(invitationPreparation){
+    const current=invitationPreparation;
+    const packet=await current.promise;
+    if(hostRoom!==room || hostWs!==ws)return;
+    if(fresh || automaticReply!==current.automaticReply)return prepareInvitation(fresh,role,automaticReply);
+    return packet;
+  }
   if(handoff.busy || !hostRoom || hostWs?.readyState!==WebSocket.OPEN)return;
   if(!fresh && lastInvitation){
     if(lastInvitation.expiresAt<=Date.now())expireInvitation(lastInvitation.pairingId);
     if(invitations.has(lastInvitation.pairingId))return lastInvitation;
     toast('Click New invite to invite another guest.');return;
   }
-  const room=hostRoom,ws=hostWs;
   const button = $('#createInvitation'); button.disabled = true;
   pairingFeedback('host');
   pairingUI('host', 'generating'); $('#hostPairStatus').textContent = 'Preparing connection settings…';
-  invitationPreparation=(async()=>{
+  const preparation={automaticReply,promise:(async()=>{
   let peerId;
   try {
     const config = await fetchIce(room.roomId);
@@ -1388,17 +1853,21 @@ async function prepareInvitation(fresh=false,role=$('#invitationRole').value) {
     await gatherIce(p.pc,30000,{onProgress:stage=>{$('#hostPairStatus').textContent=stage==='relay'?'Checking the relay for remote connections…':'Preparing your invite file…';}});
     if(hostRoom!==room)return;
     if (config.iceServers.some(s => (Array.isArray(s.urls) ? s.urls : [s.urls]).some(u => /^turns?:/.test(u))) && !/ typ relay(?: |\r|\n)/.test(p.pc.localDescription.sdp)) $('#networkStatus').textContent = 'Direct routes found, but no relay route was discovered. Connections across some networks may fail.';
-    lastInvitation = pairingPacket('offer', p.pairingId, p.pc.localDescription, config, p.slot, undefined, registered.fallback);
+    const packet = pairingPacket('offer', p.pairingId, p.pc.localDescription, config, p.slot, undefined, registered.fallback);
     hostConnectionReports.sharedDescription(p.pc,p.pc.localDescription);
-    p.expiresAt = lastInvitation.expiresAt; invitations.set(p.pairingId, { peerId, p });
-    $('#hostInviteCard').dataset.inviteAccess=role==='watch'?'Just watching':'Play';
-    $('#hostInvitation').value = JSON.stringify(lastInvitation, null, 2); $('#downloadInvitation').disabled = false;$('#copyInvitation').disabled=false;updateInviteExpiry();
-    pairingUI('host', 'ready'); $('#hostPairStatus').textContent = 'Invite ready. Download the file or copy the text, then send it to your guest.';
-    tutorialEvent('host-invite-ready');
+    const entry={peerId,p,packet,role};
+    p.expiresAt=packet.expiresAt;
+    invitations.set(p.pairingId,entry);
+    p.waitingForReply = !automaticReply;
+    renderPeers();
+    if(!automaticReply)selectHostInvitation(entry);
+    else pairingUI('host',invitations.has(lastInvitation?.pairingId)?'ready':lastInvitation?'connected':'idle');
+    updateInviteExpiry();
+    if(!automaticReply)tutorialEvent('host-invite-ready');
     p.expiryTimer = setTimeout(() => {
       if (invitations.has(p.pairingId) && p.pc.connectionState !== 'connected') expireInvitation(p.pairingId);
     }, 10 * 60 * 1000);
-    return lastInvitation;
+    return packet;
   } catch (error) {
     if(hostRoom!==room)return;
     pairingUI('host', 'error');
@@ -1406,15 +1875,16 @@ async function prepareInvitation(fresh=false,role=$('#invitationRole').value) {
     pairingFeedback('host',error.message,'invite');
     if (peerId) send(ws, { type: 'kick', peerId });
   } finally { button.disabled = !hostRoom || hostWs?.readyState !== WebSocket.OPEN; }
-  })();
-  try{return await invitationPreparation;}finally{invitationPreparation=null;}
+  })()};
+  invitationPreparation=preparation;
+  try{return await preparation.promise;}finally{if(invitationPreparation===preparation)invitationPreparation=null;}
 }
 $('#createInvitation').onclick = async (event,transfer='file',fresh=false) => {
   $('#hostInviteCard').dataset.transfer=transfer==='text'?'text':'file';
   const packet=await prepareInvitation(fresh);
   if(packet && transfer==='file' && !sessionInvites.preparingOffer){
     autoDownloadPairing($('#downloadInvitation'));
-    $('#hostPairStatus').textContent='Invite downloaded. Send it to your guest, then open or paste their reply.';
+    $('#hostPairStatus').textContent=`Invite ${inviteCode(packet.pairingId)} downloaded. Send it to your guest.`;
   }
   return packet;
 };
@@ -1424,23 +1894,63 @@ $('#downloadInvitation').onclick = () => { if(lastInvitation && lastInvitation.e
 $('#acceptReply').onclick = async () => {
   if($('#acceptReply').disabled)return;
   $('#acceptReply').disabled=true;pairingFeedback('host');
+  let invitation;
   try {
     if(!hostRoom)throw new Error('Start a session first, then create an invite for your guest.');
     const reply = parsePairing($('#hostReply').value, 'answer');
-    const invitation = invitations.get(reply.pairingId);
+    invitation = invitations.get(reply.pairingId);
     if (!invitation) {
+      if(cancelledInvitations.has(reply.pairingId))throw new Error('This invite was cancelled. Send your guest a new invite.');
       const previous=[...hostPeers.values()].find(p=>p.pairingId===reply.pairingId && p.pc.remoteDescription?.sdp===reply.sdp.sdp);
       if(previous){toast(previous.pc.connectionState==='connected'?'This guest is already connected.':'This reply is already accepted. Your guest is connecting.');return;}
       throw new Error('This reply belongs to another invite or an earlier session. Ask your guest to open an invite from this session and send its reply.');
     }
     if (invitation.p.expiresAt < Date.now()) throw new Error('The invitation expired. Create a fresh one.');
-    await setRemote(invitation.p, reply.sdp); invitations.delete(reply.pairingId); clearTimeout(invitation.p.expiryTimer);updateInviteExpiry();
+    invitation.accepting=true;
+    await setRemote(invitation.p, reply.sdp);
+    if(invitations.get(reply.pairingId)!==invitation)return;
+    invitations.delete(reply.pairingId); clearTimeout(invitation.p.expiryTimer);updateInviteExpiry();
+    invitation.p.waitingForReply = false;
+    renderPeers();
     if(lastInvitation?.pairingId===reply.pairingId){$('#downloadInvitation').disabled=true;$('#copyInvitation').disabled=true;}
-    pairingUI('host', lastInvitation && invitations.has(lastInvitation.pairingId)?'ready':'connected'); $('#hostPairStatus').textContent = 'Reply received. Your friend is joining…'; $('#hostReply').value = '';
+    pairingUI('host', lastInvitation && invitations.has(lastInvitation.pairingId)?'ready':'connected');
+    $('#hostPairStatus').textContent=!invitation.p.sessionGuestId?`Reply received for invite ${inviteCode(reply.pairingId)}. Your guest is joining…`:'Reply received. Your guest is joining…';
+    $('#hostReply').value = '';
     tutorialEvent('host-reply-opened');
-  } catch (error) { $('#hostPairStatus').textContent = error.message;pairingFeedback('host',error.message,!hostRoom?'start':/expired/.test(error.message)?'invite':'file'); }
-  finally {$('#acceptReply').disabled=false;}
+  } catch (error) { $('#hostPairStatus').textContent = error.message;pairingFeedback('host',error.message,!hostRoom?'start':/expired|cancelled/.test(error.message)?'invite':'file'); }
+  finally {
+    if(invitation){
+      invitation.accepting=false;
+      if(invitation.packet.expiresAt<=Date.now())expireInvitation(invitation.packet.pairingId);
+    }
+    $('#acceptReply').disabled=false;
+  }
 };
+document.addEventListener('pairing-file-dropped',async event=>{
+  const file=event.detail,fromHost=document.body.dataset.mode==='host';
+  try{
+    if(file.size>131072)throw Error('This file is too large. Use the invite or reply file from the app.');
+    const contents=await file.text();
+    if(document.body.dataset.mode!==(fromHost?'host':'client'))return;
+    let kind;
+    try{kind=JSON.parse(contents.replace(/^\uFEFF/,'').trim())?.kind;}catch{/* The pairing action reports invalid files. */}
+    if(fromHost && kind==='offer'){
+      const invite=parsePairing(contents,'offer');
+      if(cancelledInvitations.has(invite.pairingId))throw Error('This invite was cancelled. Create a new invite to send.');
+      if(invitations.has(invite.pairingId) || lastInvitation?.pairingId===invite.pairingId)throw Error('This invite is yours. Send it to your guest.');
+      if($('#modeClient').disabled || hostWs?.starting)throw Error('Wait for the host setup to finish before joining.');
+      if($('#createReply').disabled)throw Error('A reply is already being prepared.');
+      $('#modeClient').click();
+      if(document.body.dataset.mode!=='client')return;
+    }
+    if(fromHost && kind==='answer' && !hostRoom)throw Error('Open this reply in the host session that created its invite. To join, drop the host’s invite file here.');
+    const host=document.body.dataset.mode==='host',button=$(host?'#acceptReply':'#createReply');
+    if(button.disabled)throw Error('A file is already being processed. Try again when it finishes.');
+    $(host?'#hostReply':'#clientInvitation').value=contents;
+    if(!host)$('#clientPairing').dataset.transfer='file';
+    button.click();
+  }catch(error){toast(error.message);}
+});
 for (const [id, target] of [['hostReplyFile', 'hostReply'], ['clientInvitationFile', 'clientInvitation']]) {
   $(`#${id}`).onchange = async e => {
     const file = e.target.files[0]; if (!file) return;
@@ -1456,7 +1966,9 @@ for (const [id, target] of [['hostReplyFile', 'hostReply'], ['clientInvitationFi
   };
 }
 async function updateCapture(expectedEpoch=captureEpoch) {
+  updateScreenOverrides();
   hostViewPopouts.refreshMain();
+  hostViewPopouts.refreshAudio('').catch(()=>{});
   for (const [id, p] of hostPeers) {
     if(expectedEpoch!==captureEpoch)return;
     shareCaptureInfo(p);
@@ -1487,16 +1999,19 @@ async function stopCapture(clearSelection=true) {
   updateCapture(epoch).catch(error=>{if(epoch===captureEpoch)hostStatus(error.message);});
   await Promise.all(cleanup);
 }
-async function startCapture(reusePrepared = false) {
+async function startCapture(reusePrepared = false,{allowPicker=true}={}) {
   if(captureBusy)return false;
   if(capturePickerPending){hostStatus('Close the previous browser sharing dialog, then choose a source again.');return false;}
   if(audioOnly() && $('#nativeAudioTarget').value==='none'){$('#hostLiveSource').open=!!hostRoom;$('#nativeAudioTarget').focus({preventScroll:true});return false;}
   if(!audioOnly() && $('#captureBackend').value==='native' && selectedSource==='none') {
+    if(!allowPicker)return false;
     if(hostRoom)$('#hostLiveSource').open=true;
     const trigger=$('#captureTarget').closest('.source-picker')?.querySelector('.source-picker-trigger');trigger?.scrollIntoView({block:'nearest'});trigger?.focus({preventScroll:true});
     await captureSourcePicker.open();
     return false;
   }
+  const preparedBrowserStream=reusePrepared && captureStream?.getVideoTracks()[0]?.readyState==='live'?captureStream:null;
+  if(!allowPicker && !nativeCapture && !preparedBrowserStream)return false;
   captureMethodInitialized=true;
   captureBusy=true;
   $('#hostCapture').dataset.starting='true';
@@ -1525,14 +2040,15 @@ async function startCapture(reusePrepared = false) {
       if(!room)tutorialEvent('host-source-ready');document.dispatchEvent(new Event('call-share-ready'));return true;
     }
     if (!navigator.mediaDevices?.getDisplayMedia) throw new Error('Screen sharing requires HTTPS or localhost and a supported browser.');
-    if(reusePrepared && captureStream?.getVideoTracks()[0]?.readyState==='live')stream=captureStream;
-    else{capturePickerPending=true;try{stream=await navigator.mediaDevices.getDisplayMedia({video:captureConstraints(captureQuality),audio:$('#nativeCaptureAudio').checked && !hybridAudioWanted(),systemAudio:'include',windowAudio:'window'});}finally{capturePickerPending=false;}}
+    if(preparedBrowserStream)stream=preparedBrowserStream;
+    else{capturePickerPending=true;try{stream=await navigator.mediaDevices.getDisplayMedia({video:captureConstraints(hostScreenQuality('')),audio:$('#nativeCaptureAudio').checked && !hybridAudioWanted(),systemAudio:'include',windowAudio:'window'});}finally{capturePickerPending=false;}}
     if(epoch!==captureEpoch || room!==hostRoom){if(stream!==captureStream)stream.getTracks().forEach(t=>t.stop());return false;}
     if(nativeCapture){const stoppedEpoch=captureEpoch+1;await stopCapture(false);if(captureEpoch!==stoppedEpoch || room!==hostRoom){stream.getTracks().forEach(t=>t.stop());return false;}epoch=stoppedEpoch;captureBusy=true;$('#hostCapture').dataset.starting='true';hostSharingUI(false,!room);captureSetupUI();}
     const rawTrack=(stream._areaSource || stream).getVideoTracks()[0],rawSize=rawTrack.getSettings();
-    let actual = await applyCaptureSettings(rawTrack, captureArea.current()?{...captureQuality,width:rawSize.width,height:rawSize.height}:captureQuality);
+    const quality=hostScreenQuality('');
+    let actual = await applyCaptureSettings(rawTrack, captureArea.current()?{...quality,width:rawSize.width,height:rawSize.height}:quality);
     if(epoch!==captureEpoch || room!==hostRoom){if(stream!==captureStream)stream.getTracks().forEach(t=>t.stop());return false;}
-    stream=captureArea.browser(stream,captureQuality.frameRate);actual={...actual,...stream.getVideoTracks()[0].getSettings()};
+    stream=captureArea.browser(stream,quality.frameRate);actual={...actual,...stream.getVideoTracks()[0].getSettings()};
     if(epoch!==captureEpoch || room!==hostRoom) {if(stream!==captureStream)stream.getTracks().forEach(t=>t.stop());return false;}
     const track=stream.getVideoTracks()[0];
     if(room)queueDesktopSource();
@@ -1559,7 +2075,10 @@ async function startCapture(reusePrepared = false) {
   } catch (error) { if(epoch!==captureEpoch){if(stream && stream!==captureStream)stream.getTracks().forEach(t=>t.stop());return false;}if (stream && stream !== captureStream) stream.getTracks().forEach(t => t.stop()); const message=error.name==='NotAllowedError'?(selectedSource==='none'?'Screen selection cancelled. Start without video, or choose a source.':'Screen selection cancelled. Your previous source is kept.'):error.message;if(nativeCapture && error.name!=='NotAllowedError'){const cleanup=stopCapture();hostStatus(message);await cleanup;}else hostStatus(message);return false; }
   finally {if(epoch===captureEpoch){captureBusy=false;if(nativeCapture && nativeAudioConfigured!==nativeAudioEnabled())updateNativeAudio();$('#hostCapture').dataset.starting='false';$('#hostCapture').disabled=!hostRoom;if(selectedSource!=='none' && selectedSource!=='browser-selected')$('#captureBackend').value='native';hostSharingUI(hostMediaActive(),!hostRoom);renderCaptureSources();if(hostMediaActive())rememberHostSetup();tutorialEvent('host-capture-updated');}else captureSetupUI();}
 }
-$('#hostCapture').onclick = () => startCapture();
+$('#hostCapture').onclick = () => {
+  if(!audioOnly() && $('#captureBackend').value==='native')return captureSourcePicker.open();
+  return startCapture();
+};
 $('#hostStopCapture').onclick = () => {lastSharePending=false;rememberedBrowserShare=false;stopCapture().then(rememberHostSetup).catch(e => hostStatus(e.message));};
 let previewTimer;
 function updateHostPreview() {
@@ -1662,7 +2181,7 @@ $('#inputSource').addEventListener('change', () => {
 const desktopVideo = $('#clientStage'); desktopVideo.tabIndex = 0;
 gameMouse=relativeMouse(desktopVideo,{allowed:()=>!nativeGuest.active && clientPeer?.desktopRelative===true && $('#clientDesktopMouse').checked && desktopReady() && !guestTiles.viewOnly,send:delta=>{const p=clientPeer;if(p?.desktopChannel?.readyState==='open' && p.desktopChannel.bufferedAmount<8192)p.desktopChannel.send(JSON.stringify({type:'desktop-relative',seq:desktopMoveSequence++,sourceId:p.desktopSourceId || '',desktopToken:p.desktopToken,...delta}));},release:()=>{desktopButtons.clear();desktopKeys.clear();desktopPositionDirty=false;sendDesktopSnapshot();}});
 $('#clientDesktopMouse').closest('label').after(gameMouse.button);document.addEventListener('call-settings-refresh',()=>gameMouse.refresh());
-function pointerPoint(event){if(!pointerReady() || clientPeer?.showCursors!==true || event.target.closest('button,input,select,textarea,a,.call-toolbar,.call-sheet,.tile-title'))return null;const surface=pointerSurface();return surface?videoPoint(surface,event.clientX,event.clientY):null;}
+function pointerPoint(event){if(!pointerReady() || clientPeer?.showCursors!==true || event.target.closest('button,input,select,textarea,a,.call-toolbar,.call-sheet,.tile-title,.controller-join-prompt,.single-view-picker'))return null;const surface=pointerSurface();return surface?videoPoint(surface,event.clientX,event.clientY):null;}
 desktopVideo.addEventListener('pointermove',event=>{const point=pointerPoint(event);if(!point){if(pointerPosition)releaseGuestPointer();return;}pointerPosition=point;publishCursor();},true);
 desktopVideo.addEventListener('pointerdown',event=>{if(event.pointerType!=='mouse' || event.button<0 || event.button>4)return;const point=pointerPoint(event);if(!point)return;event.preventDefault();desktopVideo.focus({preventScroll:true});pointerPosition=point;pointerButtons.add(event.button);publishCursor(true,true);},true);
 window.addEventListener('pointerup',event=>{if(pointerButtons.delete(event.button))publishCursor(true,true);});
@@ -1671,7 +2190,7 @@ window.addEventListener('blur',releaseGuestPointer);window.addEventListener('pag
 
 desktopVideo.addEventListener('pointermove', event => {
   if(nativeGuest.latched)return;
-  if(event.target.closest('.call-toolbar'))return;
+  if(event.target.closest('.call-toolbar,.controller-join-prompt,.single-view-picker'))return;
   const surface = pointerSurface(); if (!surface) return;
   const point = videoPoint(surface, event.clientX, event.clientY);
   if (!point) { if(desktopButtons.size)releaseDesktopClient(); return; }
@@ -1682,7 +2201,7 @@ desktopVideo.addEventListener('pointermove', event => {
 });
 desktopVideo.addEventListener('pointerdown', event => {
   if(nativeGuest.latched)return;
-  if (event.target.closest('button, input, select, textarea, a, .call-toolbar')) return;
+  if (event.target.closest('button, input, select, textarea, a, .call-toolbar, .controller-join-prompt, .single-view-picker')) return;
   if (!$('#clientDesktopMouse').checked || !desktopReady() || ![0,1,2].includes(event.button)) return;
   if(gameMouse.locked()){event.preventDefault();desktopButtons.add(event.button);sendDesktopSnapshot();return;}
   const surface = pointerSurface(true); if (!surface) return;
@@ -1697,7 +2216,7 @@ desktopVideo.addEventListener('lostpointercapture', () => { if(nativeGuest.latch
 desktopVideo.addEventListener('contextmenu', event => { if (!event.target.closest('.call-toolbar') && ($('#clientDesktopMouse').checked || clientPeer?.showCursors && pointerReady())) event.preventDefault(); });
 desktopVideo.addEventListener('wheel', event => {
   if(nativeGuest.latched)return;
-  if (event.target.closest('button, input, select, textarea, a, .call-toolbar')) return;
+  if (event.target.closest('button, input, select, textarea, a, .call-toolbar, .controller-join-prompt, .single-view-picker')) return;
   const surface = pointerSurface(true);
   if (!surface || !$('#clientDesktopMouse').checked || !desktopReady() || !videoPoint(surface, event.clientX, event.clientY)) return;
   event.preventDefault(); const units = event.deltaMode === 1 ? 40 : event.deltaMode === 2 ? desktopVideo.clientHeight : 1;
@@ -1710,21 +2229,35 @@ window.addEventListener('keydown', event => {
 });
 window.addEventListener('keyup', event => { if(!nativeGuest.latched && desktopKeys.delete(event.code)) { event.preventDefault(); sendDesktopSnapshot(); } });
 setInterval(sendDesktopSnapshot, 1000 / 30);
-let qualityRequestTimer;
-async function sendClientQuality(p=clientPeer){
+let qualityRequestTimer,clientQualityRevision=0,unlockedClientAdaptive;
+function setClientResolutionPolicy(fixed){
+  const setting=$('#clientAutoThrottle'),panel=$('#clientVideoSettings');
+  if(fixed===panel.classList.contains('host-fixed-resolution'))return;
+  if(fixed){unlockedClientAdaptive=setting.checked;setting.checked=false;}
+  else{setting.checked=unlockedClientAdaptive;unlockedClientAdaptive=undefined;}
+  panel.classList.toggle('host-fixed-resolution',fixed);
+  document.dispatchEvent(new Event('call-settings-refresh'));
+}
+async function sendClientQuality(p=clientPeer,revision=clientQualityRevision){
     if(p?.control?.readyState!=='open')return;
-    const requested=clientQuality({resolution:$('#clientResolution').value,minHeight:Number($('#clientMinimumResolution').value),frameRate:$('#clientFramerate').value,automatic:$('#clientAutoThrottle').checked,codec:$('#clientCodec').value});
+    const requested=clientQuality({resolution:$('#clientResolution').value,minHeight:Number($('#clientMinimumResolution').value),frameRate:$('#clientFramerate').value,automatic:unlockedClientAdaptive ?? $('#clientAutoThrottle').checked,codec:$('#clientCodec').value});
+    const sendQuality=codecs=>p.control.send(JSON.stringify({type:'quality-request',quality:{...requested,codecs}}));
+    const originalCodec=requested.codec;
+    const currentCodecs=p.qualityCodecs || localCodecSupport.codecs;
+    sendQuality(currentCodecs);
     const limit=p.hostLimit || {},height=Math.min(limit.height || 1080,requested.resolution==='host'?Infinity:Number(requested.resolution));
     const support=await codecSupport({height,width:Math.min(limit.width || 1920,Math.round(height*16/9)),frameRate:Math.min(limit.frameRate || 60,requested.frameRate || 120),maxBitrate:limit.maxBitrate});
-    if(clientPeer!==p || p.control?.readyState!=='open')return;
+    if(revision!==clientQualityRevision || clientPeer!==p || p.control?.readyState!=='open')return;
     $('#clientCodec option[value="h265"]').disabled=!support.hevcAvailable;$('#clientCodecNote').textContent=support.reason+' Applies to native video.';
     if(!support.hevcAvailable && requested.codec==='h265'){$('#clientCodec').value='auto';requested.codec='auto';}
-    p.control.send(JSON.stringify({type:'quality-request',quality:{...requested,codecs:support.codecs}}));
+    p.qualityCodecs=support.codecs;
+    if(originalCodec!==requested.codec || currentCodecs.join()!==support.codecs.join())sendQuality(support.codecs);
 }
 function requestClientQuality() {
-  boundMinimumResolution($('#clientMinimumResolution'),Math.min(clientPeer?.hostLimit?.height || 2160,Number($('#clientResolution').value) || Infinity));
+  boundMinimumResolution($('#clientMinimumResolution'),Number($('#clientResolution').value) || Infinity);
   clearTimeout(qualityRequestTimer);
-  qualityRequestTimer=setTimeout(()=>sendClientQuality().catch(()=>{}),250);
+  const revision=++clientQualityRevision;
+  qualityRequestTimer=setTimeout(()=>sendClientQuality(clientPeer,revision).catch(()=>{}),150);
 }
 for (const id of ['clientResolution', 'clientMinimumResolution', 'clientFramerate', 'clientAutoThrottle','clientCodec']) $(`#${id}`).onchange = requestClientQuality;
 let inputVideoCallback = null, pipInputWorker = null, pipWorkerFailed = false;
@@ -1786,6 +2319,106 @@ let selectedIndex = null, savedProfile = null;
 const extraPadIndices=[], controllerReceipts=[], sessionProfiles=new Map(), extraPadCleared=new Set();
 let assignedSlots=[], controllerGeneration=0, hostControllerCapacity=null, controllerPendingRemoval=false;
 const joinedControllers=[], buttonSnapshots=new Map(),preparedControllers=new Map();
+const dismissedControllerPrompts = new Set();
+const controllerJoinPrompt = document.createElement('section');
+controllerJoinPrompt.id = 'controllerJoinPrompt';
+controllerJoinPrompt.className = 'controller-join-prompt';
+controllerJoinPrompt.setAttribute('aria-label', 'Controller detected');
+controllerJoinPrompt.hidden = true;
+controllerJoinPrompt.innerHTML = `
+  <svg class="icon" aria-hidden="true"><use href="#i-pad"/></svg>
+  <div class="controller-join-copy" role="status">
+    <strong data-controller-name></strong>
+    <p data-controller-message></p>
+  </div>
+  <button type="button" class="button primary small-button" data-controller-join>Join controller</button>
+  <button type="button" class="button small-button" data-controller-dismiss aria-label="Dismiss controller prompt">×</button>`;
+$('#clientStage').append(controllerJoinPrompt);
+
+let controllerPromptChoice;
+const controllerPromptAction = controllerJoinPrompt.querySelector('[data-controller-join]');
+const controllerPromptName = controllerJoinPrompt.querySelector('[data-controller-name]');
+const controllerPromptMessage = controllerJoinPrompt.querySelector('[data-controller-message]');
+const controllerPromptId = pad => `${pad.index}:${pad.id}`;
+
+function showControllerPrompt(choice) {
+  const changed = choice && (controllerPromptChoice?.id !== choice.id || controllerPromptChoice.action !== choice.action);
+  controllerPromptChoice = choice;
+  if (!choice) {
+    if (controllerJoinPrompt.contains(document.activeElement)) $('#clientCallControllers')?.focus({ preventScroll: true });
+    controllerJoinPrompt.hidden = true;
+    return;
+  }
+  controllerJoinPrompt.hidden = false;
+  if (controllerPromptName.textContent !== choice.name) controllerPromptName.textContent = choice.name;
+  if (controllerPromptMessage.textContent !== choice.message) controllerPromptMessage.textContent = choice.message;
+  if (controllerPromptAction.textContent !== choice.action) controllerPromptAction.textContent = choice.action;
+  if (changed) document.dispatchEvent(new CustomEvent('ui-attention',{detail:controllerJoinPrompt}));
+}
+
+function updateControllerPrompt(view, pads) {
+  const peer = clientPeer;
+  if ($('#clientPanel').hidden || $('#clientJoinControllers')?.checked===false || peer?.pc.connectionState !== 'connected' || !peer.controllersRequested || !peer.wantsController ||
+      peer.channel?.readyState !== 'open' || peer.control?.readyState !== 'open' || peer.controllerError || controllerPendingRemoval ||
+      reverseControllers?.nativeActive() || view.switching || (view.active && view.awaitingState) || keyboardMapping.dialog.open) {
+    if (controllerPromptChoice) showControllerPrompt(null);
+    return;
+  }
+
+  const useBrowser = view.blocksBrowser;
+  const candidates = useBrowser ? [...(navigator.getGamepads?.() || [])] : pads;
+  const dynamic = dynamicMode();
+  const roomForController = !Number.isInteger(hostControllerCapacity) || joinedControllers.length < hostControllerCapacity;
+  const pending = [];
+  for (const pad of candidates) {
+    if (!pad || pad.connected === false) continue;
+    const id = controllerPromptId(pad);
+    if (dismissedControllerPrompts.has(id)) continue;
+    const lane = dynamic ? joinedControllers.findIndex(controller => controller.source === 'gamepad' && controller.id === pad.id && controller.index === pad.index)
+      : [$('#inputSource').value === 'gamepad' ? selectedIndex : null, ...extraPadIndices].indexOf(pad.index);
+    const needsMapping = padNeedsMapping(pad);
+    if (lane >= 0 && (!assignedSlots[lane] || (enabled && !needsMapping && !useBrowser))) continue;
+    if (lane < 0 && (!dynamic || !roomForController)) continue;
+    pending.push({ pad, id, needsMapping, useBrowser });
+  }
+
+  const next = pending.find(candidate => candidate.id === controllerPromptChoice?.id) || pending[0];
+  if (!next) {
+    if (controllerPromptChoice) showControllerPrompt(null);
+    return;
+  }
+  const name = `${friendlyControllerName(next.pad.id)} detected`;
+  let message = 'Press a button to join.';
+  let action = 'Join controller';
+  if (next.needsMapping) {
+    message = next.useBrowser ? 'Map its buttons using browser input. Local controller input stays on.' : 'Map its buttons and sticks to use this controller.';
+    action = 'Map controller';
+  } else if (clientPeer?.localControllerJoin?.needsSelection(next.pad)) {
+    message = 'Select Join controller if this is your physical controller.';
+  } else if (next.useBrowser) {
+    message = 'Join using browser input. Local controller input stays on.';
+  }
+  showControllerPrompt({ ...next, name, message, action, offered: pending.map(candidate => candidate.id) });
+}
+
+controllerPromptAction.onclick = () => {
+  const choice = controllerPromptChoice;
+  if (!choice) return;
+  const pads = choice.useBrowser ? navigator.getGamepads?.() : inputGamepads();
+  const pad = [...(pads || [])].find(device => device && device.connected !== false && controllerPromptId(device) === choice.id);
+  if (!pad) {
+    showControllerPrompt(null);
+    return;
+  }
+  if (choice.useBrowser) nativeGuest.setPreference(false);
+  if (choice.needsMapping) keyboardMapping.open(pad.index);
+  else if (dynamicMode()) joinGamepad(pad, true);
+  else setControllerSharing(true);
+};
+controllerJoinPrompt.querySelector('[data-controller-dismiss]').onclick = () => {
+  for (const id of controllerPromptChoice?.offered || []) dismissedControllerPrompts.add(id);
+  showControllerPrompt(null);
+};
 const controllerErrorNotice=document.createElement('p');controllerErrorNotice.id='clientControllerError';controllerErrorNotice.className='input-caution';controllerErrorNotice.setAttribute('role','status');controllerErrorNotice.hidden=true;$('#connectedControllers').before(controllerErrorNotice);
 function dynamicMode(){return clientPeer?.dynamicControllers===true;}
 function canUseClientInputs(){return !!assignedSlot || dynamicMode() && clientPeer?.wantsController===true;}
@@ -1800,9 +2433,12 @@ function releaseClient() {
   if (clientPeer?.control?.readyState === 'open') clientPeer.control.send(JSON.stringify({ type: 'release', seq:sequence++ }));
 }
 function closeClientPeer({preserveVoice=false,keepTransport=false,preserveNative=false,preserveCameraPreview=false}={}) {
+  clearClientReplyExpiry();
+  setClientResolutionPolicy(false);
+  if (controllerPromptChoice) showControllerPrompt(null);
   if(!preserveVoice){if(!preserveCameraPreview || clientVoice.ready)clientVoice.setReady(false);if(!preserveCameraPreview)clientCamera.setReady(false);clientScreens.setReady(false);clientChat.setReady(false);}
   if(!preserveNative)nativeGuest.endSession();
-  guestTiles.clear();clientViews.clear();guestViewPopouts.clear();clearTimeout(videoRefreshTimer);videoRefreshUntil=0;
+  guestTiles.clear();clientViews.clear();guestViewPopouts.clear();$('#clientVideo').muted=guestScreenMuted('');clearTimeout(videoRefreshTimer);videoRefreshUntil=0;
   stopInputVideoClock();
   releaseClient(); clearInterval(sendTimer); clearInterval(statsTimer);
   const previous = clientPeer;previous?.cancelVideoHandover?.();previous?.grace?.stop();document.dispatchEvent(new CustomEvent('call-recovery',{detail:'closed'})); clientPeer = null; previous?.nativePC?.close();previous?.retiredPC?.close();previous?.hybridAudioPC?.close(); previous?.playback?.close();if(!keepTransport)previous?.pc.close(); $('#clientVideo').srcObject = null;
@@ -1823,6 +2459,7 @@ function suspendClientControls() {
   updateVideoRefresh();
 }
 function storageKey(gp) { return `webrtc-pad:layout:${navigator.userAgent}:${gp.id}`; }
+function padNeedsMapping(pad){return !!pad && pad.mapping!=='standard' && !profileFor(pad);}
 function profileFor(gp) {
   if(!gp) return null;
   if(sessionProfiles.has(gp.id))return sessionProfiles.get(gp.id);
@@ -1838,46 +2475,61 @@ function receiveRumble(message){const value=cleanRumble(message);if(!value || !e
 let liveControllerRows=[];
 function renderConnectedControllers(view=nativeGuest) {
   const root=$('#connectedControllers'),sharing=$('#clientJoinControllers')?.checked!==false,native=$('#controllerSetup').dataset.inputMode==='native';
-  root.dataset.sharing=String(sharing);const discovery=$('#controllerSetup .controller-discovery');if(discovery)discovery.hidden=!sharing;
+  if(root.dataset.sharing!==String(sharing))root.dataset.sharing=String(sharing);
+  const discovery=$('#controllerSetup .controller-discovery');
   const connected=clientPeer?.pc.connectionState==='connected' && clientPeer?.channel?.readyState==='open';
   controllerErrorNotice.hidden=!clientPeer?.controllerError;const errorText=clientPeer?.controllerError?`Host controller setup: ${clientPeer.controllerError}`:'';if(controllerErrorNotice.textContent!==errorText)controllerErrorNotice.textContent=errorText;
   const pads=[...(view.latched && !view.browserFallback?view.pads:navigator.getGamepads?.() || [])].filter(p=>p && p.connected!==false);
+  updateControllerPrompt(view, pads);
   const entries=native?view.devices.filter(d=>d.kind==='gamepad').map(d=>({id:d.id,name:d.label,device:d,pad:pads.find(p=>p.id.split(' · ')[0]===d.id)})):pads.map(p=>({id:p.id+':'+p.index,name:p.id,pad:p}));
   const rows=entries.map(entry=>{
     const {pad,device}=entry;
     const lane=dynamicMode()?joinedControllers.findIndex(d=>d.source==='gamepad' && (pad?d.id===pad.id && d.index===pad.index:d.id.split(' · ')[0]===entry.id)):pad?[$('#inputSource').value==='gamepad'?selectedIndex:null,...extraPadIndices].indexOf(pad.index):-1;
     const slot=connected && lane>=0?assignedSlots[lane]:null;
     const prepared=preparedControllers.has(entry.id);
-    const status=!sharing && !slot?'Sharing off':!connected && prepared?'Ready to join':slot?`${enabled?'In use':'Paused'} · ${slot.toUpperCase()}`:connected && dynamicMode() && lane>=0?clientPeer.controllerError?'Host controller setup needed':'Joining…':device && !device.available?'Setup needed':native && !view.active?view.paused?'Needs attention':'Preparing…':pad && pad.mapping!=='standard' && !profileFor(pad)?'Needs mapping':connected && clientPeer?.wantsController && dynamicMode()?'Press a button or select to join':'Connected';
-    return {...entry,lane,status,used:!!slot,prepared};
+    const needsMapping=padNeedsMapping(pad);
+    const status=!sharing && !slot?'Sharing off':needsMapping?'Needs mapping':!connected && prepared?'Ready to join':slot?`${enabled?'In use':'Paused'} · ${slot.toUpperCase()}`:connected && dynamicMode() && lane>=0?clientPeer.controllerError?'Host controller setup needed':'Joining…':device && !device.available?'Setup needed':native && !view.active?view.paused?'Needs attention':'Preparing…':connected && clientPeer?.wantsController && dynamicMode()?clientPeer.localControllerJoin?.needsSelection(pad)?'Select to join':'Press a button to join':'Connected';
+    return {...entry,lane,status,used:!!slot,prepared,needsMapping};
   });
   if(!connected && preparedControllers.has('keyboard'))rows.push({id:'keyboard',name:'Keyboard & mouse controller',lane:-1,used:false,prepared:true,status:'Ready to join'});
   if(dynamicMode())for(let lane=0;lane<joinedControllers.length;lane++)if(joinedControllers[lane].source==='keyboard')rows.push({id:'keyboard',name:'Keyboard & mouse controller',lane,used:!!assignedSlots[lane],status:assignedSlots[lane]?`${enabled?'In use':'Paused'} · ${assignedSlots[lane].toUpperCase()}`:'Joining…'});
   if(!dynamicMode() && $('#inputSource').value==='keyboard' && assignedSlots[0])rows.push({id:'keyboard',name:'Keyboard & mouse controller',lane:0,used:true,status:`${enabled?'In use':'Paused'} · ${assignedSlots[0].toUpperCase()}`});
-  if(discovery)discovery.hidden=!sharing || !rows.length || rows.every(row=>row.used || row.prepared);
+  const hideDiscovery=!sharing || connected || !rows.length || rows.every(row=>row.prepared);
+  if(discovery && discovery.hidden!==hideDiscovery)discovery.hidden=hideDiscovery;
   if(clientPeer?.control?.readyState==='open'){
     const controllers=dynamicMode()?joinedControllers.map((d,index)=>{const row=rows.find(r=>r.lane===index);return {index,name:row?.name || (d.source==='keyboard'?'Keyboard controller':'Controller'),connected:d.source==='keyboard' || !!row?.pad,keyboard:d.source==='keyboard'};}):rows.filter(r=>r.lane>=0).map(r=>({index:r.lane,name:r.name,connected:r.id==='keyboard' || !!r.pad,keyboard:r.id==='keyboard'}));
-    const presence=JSON.stringify({type:'controller-status',...controllerPresence({detected:entries.length,enabled,setupRequired:view.blocksBrowser && view.needsControllerSetup,controllers})});
+    const presence=JSON.stringify({type:'controller-status',...controllerPresence({detected:entries.length,needsMapping:rows.filter(row=>row.needsMapping && row.lane<0).length,enabled,setupRequired:view.blocksBrowser && view.needsControllerSetup,controllers})});
     if(clientPeer.lastControllerPresence!==presence && clientPeer.control.bufferedAmount<32768){clientPeer.control.send(presence);clientPeer.lastControllerPresence=presence;}
   }
   liveControllerRows=rows;
   const mappingEntry=$('#keyboardMapping > button');if(mappingEntry)mappingEntry.hidden=rows.some(r=>r.pad || r.id==='keyboard');
   const detectedCount=$('#controllerDetectedCount');if(detectedCount){const text=entries.length?`${entries.length} detected`:'';if(detectedCount.textContent!==text)detectedCount.textContent=text;}
   const empty=!sharing?'Turn on Share controllers to use a controller on the host.':native && view.paused?'Controller setup needs attention.':native && view.listPending?'Checking controllers…':'Connect a controller, then press a button.';
-  const signature=JSON.stringify([rows.map(r=>[r.id,r.name,r.lane,r.status,r.used,!!r.pad,r.prepared]),connected,controllerPendingRemoval,empty]);
-  if(root.dataset.signature===signature)return;const focused=root.contains(document.activeElement)?{id:document.activeElement.closest('[data-controller-id]')?.dataset.controllerId,label:document.activeElement.getAttribute('aria-label')}:null;
-  const restoreFocus=()=>{if(!focused)return;const item=[...root.querySelectorAll('[data-controller-id]')].find(el=>el.dataset.controllerId===focused.id),target=item && [...item.querySelectorAll('button,input,summary')].find(el=>el.getAttribute('aria-label')===focused.label && !el.disabled);if(target)target.focus({preventScroll:true});else{root.tabIndex=-1;root.focus({preventScroll:true});}};
+  const canJoin=connected && dynamicMode() && clientPeer.wantsController && !controllerPendingRemoval && !nativeGuest.blocksBrowser && !nativeGuest.switching && !(nativeGuest.active && nativeGuest.awaitingState);
+  const signature=JSON.stringify([rows.map(r=>[r.id,r.name,r.lane,r.status,r.used,!!r.pad,r.prepared,r.needsMapping,r.device?.available]),connected,canJoin,controllerPendingRemoval,empty]);
+  if(root.dataset.signature===signature)return;
+  const active=document.activeElement;
+  const focused=root.contains(active)?{id:active.closest('[data-controller-id]')?.dataset.controllerId,action:active.dataset.controllerAction || (active.matches('summary')?'test':null)}:null;
+  const restoreFocus=()=>{
+    if(!focused)return;
+    const item=[...root.querySelectorAll('[data-controller-id]')].find(el=>el.dataset.controllerId===focused.id);
+    const target=item?.querySelector(focused.action==='test'?'summary':`[data-controller-action="${focused.action}"]:enabled`) || item?.querySelector('.controller-map');
+    if(target)target.focus({preventScroll:true});else{root.tabIndex=-1;root.focus({preventScroll:true});}
+  };
   const openTests=new Set([...root.querySelectorAll('.connected-controller')].filter(item=>item.querySelector('.pad-live-test')?.open).map(item=>item.dataset.controllerId));root.dataset.signature=signature;root.replaceChildren();
   if(!rows.length){const note=document.createElement('p');note.className='small muted';note.textContent=empty;root.append(note);restoreFocus();return;}
   for(const row of rows){
     const item=document.createElement('div');item.className='connected-controller';item.setAttribute('role','listitem');item.dataset.controllerId=row.id;if(row.lane>=0)item.dataset.player=String(row.lane%6+1);
     const glyph=document.createElementNS('http://www.w3.org/2000/svg','svg');glyph.classList.add('icon','controller-device-icon');glyph.setAttribute('aria-hidden','true');glyph.innerHTML=`<use href="#i-${row.id==='keyboard'?'keyboard':'pad'}"/>`;item.append(glyph);
-    const text=document.createElement('button'),name=document.createElement('strong'),status=document.createElement('span');text.type='button';text.className='controller-select';text.setAttribute('aria-label',`Select ${row.name}`);text.setAttribute('aria-pressed',String(row.used || row.prepared || row.lane>=0));text.disabled=!(row.pad || row.device?.available || row.id==='keyboard') || connected && (!dynamicMode() || !clientPeer.wantsController || row.lane>=0 || controllerPendingRemoval || nativeGuest.blocksBrowser || nativeGuest.switching || nativeGuest.active && nativeGuest.awaitingState);text.onclick=()=>{
+    const text=document.createElement('button'),name=document.createElement('strong'),status=document.createElement('span');
+    const actionLabel=connected && row.lane<0?'Join':'Select';
+    text.type='button';text.className='controller-select';text.dataset.controllerAction='select';text.setAttribute('aria-label',`${actionLabel} ${row.name}`);text.setAttribute('aria-pressed',String(row.used || row.prepared || row.lane>=0));text.disabled=row.needsMapping || (connected?!(canJoin && row.lane<0 && row.pad):!(row.pad || row.device?.available || row.id==='keyboard'));text.onclick=()=>{
       if(!connected){if(row.prepared)preparedControllers.delete(row.id);else{setControllerSharing(true);preparedControllers.set(row.id,row.id==='keyboard'?{source:'keyboard',id:'Keyboard controller',index:null}:{source:'gamepad',id:row.pad?.id,index:row.pad?.index,deviceId:row.device?.id});}refreshGamepads();}
       else if(!row.used && row.pad)joinGamepad(row.pad,true);
     };name.textContent=friendlyControllerName(row.name);if(name.textContent!==row.name)name.title=row.name;status.className='controller-use-status';status.textContent=row.status;item.dataset.inUse=String(row.used && enabled);text.append(name,status);item.append(text);
-    if(row.pad || row.id==='keyboard'){const map=document.createElement('button');map.className='button small-button controller-map';map.innerHTML='<svg class="icon" aria-hidden="true"><use href="#i-settings"/></svg><span>Map</span>';map.title=`Map ${row.name}`;map.setAttribute('aria-label',map.title);map.onclick=()=>keyboardMapping.open(row.id==='keyboard'?'keyboard':row.pad.index);item.append(map);}
-    if(row.lane>=0 && clientPeer?.control?.readyState==='open'){const remove=document.createElement('button');remove.className='button small-button controller-remove';remove.textContent='×';remove.setAttribute('aria-label',`Stop using ${row.name}`);remove.title='Remove from this session';remove.disabled=controllerPendingRemoval;remove.onclick=()=>removeMyController(row.lane);item.append(remove);}
+    if(!text.disabled && !row.prepared){const action=document.createElement('span');action.className='controller-action-label';action.setAttribute('aria-hidden','true');action.textContent=actionLabel;text.append(action);}
+    if(row.pad || row.id==='keyboard'){const map=document.createElement('button');map.className='button small-button controller-map';map.dataset.controllerAction='map';map.innerHTML='<svg class="icon" aria-hidden="true"><use href="#i-settings"/></svg><span>Map</span>';map.title=`Map ${row.name}`;map.setAttribute('aria-label',map.title);map.onclick=()=>keyboardMapping.open(row.id==='keyboard'?'keyboard':row.pad.index);item.append(map);}
+    if(row.lane>=0 && clientPeer?.control?.readyState==='open'){const remove=document.createElement('button');remove.className='button small-button controller-remove';remove.dataset.controllerAction='remove';remove.textContent='×';remove.setAttribute('aria-label',`Stop using ${row.name}`);remove.title='Remove from this session';remove.disabled=controllerPendingRemoval;remove.onclick=()=>removeMyController(row.lane);item.append(remove);}
     if(row.pad){addControllerTest(item);item.querySelector('.pad-live-test').open=openTests.has(row.id);}root.append(item);
   }  restoreFocus();
 }
@@ -1958,7 +2610,7 @@ function updateControllerTests(pads=inputGamepads()) {
   for(let lane=0;lane<controllerCount();lane++) {
     const el=lane===0?$('#primaryControllerTest'):$(`#controllerTest${lane}`);if(!el)continue;
     const source=dynamicMode()?joinedControllers[lane]?.source:lane===0?$('#inputSource').value:'gamepad',index=lane===0?selectedIndex:extraPadIndices[lane-1],gp=pads[index];
-    let text=source==='keyboard' ? `Keyboard controller · ${keys.size?'keys pressed':'click the picture, then press your assigned keys'}` : source==='desktop'?'Click the picture, then type to control the host desktop.' : !gp || gp.connected===false?(index==null?'Connect a controller, then press a button.':'Disconnected · reconnect this controller and press a button.') : used.has(index)?'Already used by another player · choose a different gamepad.' : gp.mapping!=='standard' && !profileFor(gp)?'Open controller mapping and save this device’s layout before playing.' : `Detected · ${gp.buttons.some(b=>b.pressed)||gp.axes.some(a=>Math.abs(a)>.2)?'Input active':'press a button or move a stick'}`;
+    let text=source==='keyboard' ? `Keyboard controller · ${keys.size?'keys pressed':'click the picture, then press your assigned keys'}` : source==='desktop'?'Click the picture, then type to control the host desktop.' : !gp || gp.connected===false?(index==null?'Connect a controller, then press a button.':'Disconnected · reconnect this controller and press a button.') : used.has(index)?'Already used by another player · choose a different gamepad.' : padNeedsMapping(gp)?'Open controller mapping and save this device’s layout before playing.' : `Detected · ${gp.buttons.some(b=>b.pressed)||gp.axes.some(a=>Math.abs(a)>.2)?'Input active':'press a button or move a stick'}`;
     if(source==='gamepad' && index!==null)used.add(index);
     if(enabled && assignedSlots[lane])text+= Date.now()-(controllerReceipts[lane] || 0)<2200?' · Delivered to host': ' · Waiting for host receipt';
     if(el.textContent!==text)el.textContent=text;
@@ -1969,12 +2621,13 @@ function rememberControllerButtons() {
   for(const gp of inputGamepads() || [])if(gp)buttonSnapshots.set(`${gp.index}:${gp.id}`,gp.buttons.map(b=>b.pressed || b.value>.5));
 }
 function joinGamepad(gp,resume=false) {
+  if(padNeedsMapping(gp))return;
   if(resume && !$('#clientJoinControllers').checked)setControllerSharing(true);
   if(!gp || gp.connected===false || !dynamicMode() || !clientPeer.wantsController || clientPeer.control?.readyState!=='open' || nativeGuest.blocksBrowser || nativeGuest.switching || nativeGuest.active && nativeGuest.awaitingState)return;
   if(resume){enabled=true;controllerUI(true);startInputVideoClock();}
-  if(!enabled)return;
+  if(!enabled || !resume && clientPeer.localControllerJoin?.needsSelection(gp))return;
   const lane=joinedControllers.findIndex(d=>d.source==='gamepad' && d.id===gp.id && d.index===gp.index);
-  if(lane<0)joinedControllers.push({index:gp.index,id:gp.id,source:'gamepad'});
+  if(lane<0){clientPeer.localControllerJoin?.lock();joinedControllers.push({index:gp.index,id:gp.id,source:'gamepad'});}
   if(lane<0 || lane>=assignedSlots.length){requestClientControllers();refreshGamepads();}
 }
 function applyPreparedControllers() {
@@ -1985,12 +2638,12 @@ function applyPreparedControllers() {
   for(const [key,choice] of [...preparedControllers].sort(([,a],[,b])=>{const rank=p=>{const i=preferredControllerOrder.indexOf(orderIdentity(p));return i<0?999:i;};return rank(a)-rank(b);})){ 
     if(p.preparedApplied.has(key))continue;
     const pad=choice.source==='gamepad'?pads.find(gp=>choice.deviceId?gp.id.split(' · ')[0]===choice.deviceId:gp.id===choice.id && gp.index===choice.index):null;
-    if(choice.source==='keyboard'?p.allowKeyboard!==true:!pad)continue;
+    if(choice.source==='keyboard'?p.allowKeyboard!==true:!pad || padNeedsMapping(pad))continue;
     const entry=pad?{source:'gamepad',id:pad.id,index:pad.index}:{...choice};
     p.preparedApplied.add(key);
     if(!joinedControllers.some(d=>d.source===entry.source && d.id===entry.id && d.index===entry.index)){joinedControllers.push(entry);changed=true;}
   }
-  if(changed){requestClientControllers();refreshGamepads();}
+  if(changed){p.localControllerJoin?.lock();requestClientControllers();refreshGamepads();}
 }
 function scanJoiningControllers() {
   if($('#clientPanel').hidden || keyboardMapping.dialog.open || nativeGuest.blocksBrowser || nativeGuest.switching || nativeGuest.active && nativeGuest.awaitingState)return;
@@ -1999,13 +2652,14 @@ function scanJoiningControllers() {
   if(!preparing && !dynamicMode())return;
   if(!preparing)applyPreparedControllers();
   const pads=[...(inputGamepads() || [])].filter(gp=>gp && gp.connected!==false);
-  const focused=nativeGuest.active || !document.hidden && document.hasFocus() || $('#backgroundGamepad').checked || document.pictureInPictureElement===$('#clientVideo');
+  clientPeer?.localControllerJoin?.observe(pads);
+  const focused=nativeGuest.active || !document.hidden && document.hasFocus() || $('#backgroundGamepad').checked || floatingScreens.focused || document.pictureInPictureElement===$('#clientVideo');
   for(const gp of pads) {
     const key=`${gp.index}:${gp.id}`,snapshot=buttonSnapshots.get(key) || [];let pressed=false;
     for(let i=0;i<gp.buttons.length;i++){const down=gp.buttons[i].pressed || gp.buttons[i].value>.5;if(down && !snapshot[i])pressed=true;snapshot[i]=down;}
     buttonSnapshots.set(key,snapshot);
     if(preparing){
-      if(pressed && focused){const deviceId=nativeGuest.latched && !nativeGuest.browserFallback?gp.id.split(' · ')[0]:undefined,key=deviceId || `${gp.id}:${gp.index}`;if(!preparedControllers.has(key)){preparedControllers.set(key,{source:'gamepad',id:gp.id,index:gp.index,deviceId});$('#clientJoinControllers').checked=true;refreshGamepads();}}
+      if(pressed && focused && !padNeedsMapping(gp)){const deviceId=nativeGuest.latched && !nativeGuest.browserFallback?gp.id.split(' · ')[0]:undefined,key=deviceId || `${gp.id}:${gp.index}`;if(!preparedControllers.has(key)){preparedControllers.set(key,{source:'gamepad',id:gp.id,index:gp.index,deviceId});$('#clientJoinControllers').checked=true;refreshGamepads();}}
       continue;
     }
     if(!enabled || !focused || !clientPeer.wantsController || !pressed || clientPeer.control?.readyState!=='open')continue;
@@ -2047,7 +2701,7 @@ function sendInputs() {
     const source=dynamicMode()?joinedControllers[controller]?.source:controller===0?$('#inputSource').value:'gamepad';
     if(source==='desktop' || source==='keyboard' && clientPeer?.allowKeyboard===false)continue;
     let state=neutralState();
-    if (nativeGuest.active || (!document.hidden && document.hasFocus()) || (source==='gamepad' && ($('#backgroundGamepad').checked || document.pictureInPictureElement===$('#clientVideo')))) {
+    if (nativeGuest.active || (!document.hidden && document.hasFocus()) || (source==='gamepad' && ($('#backgroundGamepad').checked || floatingScreens.focused || document.pictureInPictureElement===$('#clientVideo')))) {
       if(source==='keyboard')state=chatting()?neutralState():keyboardState(keys,keyboardMapping.bindings);
       else {
         const index=controller===0?selectedIndex:extraPadIndices[controller-1],gp=inputGamepads()[index];
@@ -2111,7 +2765,7 @@ window.addEventListener('keydown', e => {
 });
 window.addEventListener('keyup', e => {if(!nativeGuest.latched && keys.delete(e.code))sendInputs();});
 const mappedMouseTimers=new Map();
-function controllerMouseReady(event){return !nativeGuest.latched && !keyboardMapping.dialog.open && enabled && hasKeyboardController() && clientPeer?.allowKeyboard!==false && !chatting() && !event.target.closest('button,input,select,textarea,a,.call-toolbar,.call-sheet');}
+function controllerMouseReady(event){return !nativeGuest.latched && !keyboardMapping.dialog.open && enabled && hasKeyboardController() && clientPeer?.allowKeyboard!==false && !chatting() && !event.target.closest('button,input,select,textarea,a,.call-toolbar,.call-sheet,.controller-join-prompt,.single-view-picker');}
 $('#clientStage').addEventListener('pointerdown',event=>{
   const code=`Mouse${event.button}`;if(event.pointerType!=='mouse' || !controllerMouseReady(event) || !Object.values(keyboardMapping.bindings).includes(code))return;
   event.preventDefault();event.stopImmediatePropagation();desktopVideo.focus({preventScroll:true});desktopVideo.setPointerCapture?.(event.pointerId);keys.add(code);sendInputs();
@@ -2174,7 +2828,8 @@ async function negotiateClient(invitation,transport) {
     }
     if (ch.label === 'control') {
       p.control = ch;ch.onclose=()=>{if(clientPeer===p){clientVoice.setReady(false);clientCamera.setReady(false);clientScreens.setReady(false);clientChat.setReady(false);}};
-      ch.onopen = async () => { inputStreams?.guestAttach(ch);reverseControllers?.guestAttach(ch);if(!p.handoff){clientVoice.connect(voiceSend(ch));clientCamera.connect(voiceSend(ch));clientScreens.connect(voiceSend(ch));}ch.send(JSON.stringify({type:'host-capability',enabled:canBecomeHost()}));await sendClientQuality(p);if(clientPeer===p && ch.readyState==='open')ch.send(JSON.stringify({ type: 'media-subscription', enabled: $('#clientReceiveVideo').checked })); };
+      const announceHostCapability=()=>{if(clientPeer===p && ch.readyState==='open')ch.send(JSON.stringify({type:'host-capability',enabled:canBecomeHost(),local:p.sameLocalApp===true}));};
+      ch.onopen = async () => { inputStreams?.guestAttach(ch);reverseControllers?.guestAttach(ch);if(!p.handoff){clientVoice.connect(voiceSend(ch));clientCamera.connect(voiceSend(ch));clientScreens.connect(voiceSend(ch));}localConfig.then(announceHostCapability);await sendClientQuality(p);if(clientPeer===p && ch.readyState==='open')ch.send(JSON.stringify({ type: 'media-subscription', enabled: $('#clientReceiveVideo').checked })); };
       let queue = Promise.resolve();
       ch.onmessage = ev => {
         const handoffMessage=typeof ev.data==='string' && ev.data.length<=131072?parse(ev.data):null;
@@ -2186,9 +2841,26 @@ async function negotiateClient(invitation,transport) {
         if (clientPeer !== p || typeof ev.data !== 'string' || ev.data.length > 131072) return;
         const msg = parse(ev.data);
         if(msg?.type==='guest-view-request'){await sendGuestView(p,msg);return;}
-        if(msg?.type==='shared-views'){clientViews.update(msg);guestViewPopouts.update(msg.sources || []);guestTiles.update(msg);return;}
+        if(msg?.type==='controller-origin'){
+          if(!localControllerInstance)await localConfig;
+          if(clientPeer===p && localControllerInstance && msg.instance===localControllerInstance){
+            p.sameLocalApp=true;announceHostCapability();
+            p.localControllerJoin ||= new LocalControllerJoin();
+            if(msg.outputActive===true)p.localControllerJoin.lock();
+            else p.localControllerJoin.observe(inputGamepads());
+          }
+          return;
+        }
+        if(msg?.type==='controller-outputs-active'){p.localControllerJoin?.lock();return;}
+        if(msg?.type==='shared-views'){
+          clientViews.update(msg);guestViewPopouts.update(Array.isArray(msg.sources)?msg.sources:[],msg.selected);
+          guestViewPopouts.setMuted('',guestScreenMuted(''));
+          $('#clientVideo').muted=guestScreenMuted(guestViewPopouts.selected);p.playback.refresh();soundUI($('#clientVideo').muted);
+          refreshGuestScreenSound();document.dispatchEvent(new Event('shared-view-selection'));return;
+        }
         if(await guestViewPopouts.handle(msg))return;
         if(msg?.type==='capture-info') {
+          if(typeof msg.sourceId==='string')$('#clientVideo').muted=guestScreenMuted(msg.sourceId);
           $('#clientVideo').dataset.audioOnly=String(msg.audioOnly===true);
           if(msg.audioOnly===true)for(const track of p.stream.getVideoTracks())p.stream.removeTrack(track);
           $('#clientVideoSettings').hidden=msg.audioOnly===true;$('#clientVideoToggle').closest('label').hidden=msg.audioOnly===true;
@@ -2232,11 +2904,13 @@ async function negotiateClient(invitation,transport) {
           const fields=value=>JSON.stringify([value?.width,value?.height,value?.frameRate,value?.maxBitrate,value?.codec]);
           const changed=fields(p.hostLimit)!==fields(msg.host);
           p.hostLimit = msg.host;
+          setClientResolutionPolicy(msg.host?.autoThrottle===false);
           if(changed)requestClientQuality();
           const height = msg.host?.height || 2160, fps = msg.host?.frameRate || 120;
           for (const option of $('#clientResolution').options) option.disabled = option.value !== 'host' && Number(option.value) > height;
           for (const option of $('#clientFramerate').options) option.disabled = option.value !== '0' && Number(option.value) > fps;
-          $('#clientHostLimit').textContent = `Host limit: ${msg.host?.height ? msg.host.height + 'p' : 'source size'} · ${fps} fps. Your stream: ${msg.assigned?.height ? msg.assigned.height + 'p' : 'source size'} · ${Math.round(msg.assigned?.frameRate || fps)} fps. ${msg.assigned?.autoThrottle===false?'Fixed resolution.':`Automatic · minimum ${msg.assigned?.minHeight || 480}p.`}`;
+          const policy=msg.assigned?.autoThrottle===false?'Fixed quality':`Adaptive · min ${msg.assigned?.minHeight || 480}p`;
+          $('#clientHostLimit').textContent = `Your stream · ${msg.assigned?.height ? msg.assigned.height + 'p' : 'Source size'} · ${Math.round(msg.assigned?.frameRate || fps)} fps · ${policy}.`;
           return;
         }
         if(msg?.type==='audio-stop'){stopHybridReceiver();return;}
@@ -2271,7 +2945,7 @@ async function negotiateClient(invitation,transport) {
               if(event.track.kind==='audio')p.nativeAudio={track:event.track,receiver:event.receiver};
               const commit=()=>{attachTrack(event.track,event.receiver);if(event.track.kind==='video' || $('#clientVideo').dataset.audioOnly==='true'){p.retiredPC?.close();p.retiredPC=null;if(native && ch.readyState==='open')ch.send(JSON.stringify({type:'native-presented',id:msg.id}));}};
               if(event.track.kind==='video' && p.retiredPC && !$('#clientVideo').hidden){
-                p.cancelVideoHandover?.();p.cancelVideoHandover=prepareVideoHandover(event.track,{active:()=>clientPeer===p && p.nativePC===media,ready:()=>{p.cancelVideoHandover=null;commit();},failed:()=>{p.cancelVideoHandover=null;if(ch.readyState==='open')ch.send(JSON.stringify({type:native?'native-restart':'browser-restart'}));}});
+                p.cancelVideoHandover?.();p.cancelVideoHandover=prepareVideoHandover(event.track,{active:()=>clientPeer===p && p.nativePC===media,ready:()=>{p.cancelVideoHandover=null;commit();},failed:()=>{p.cancelVideoHandover=null;if(!native && ch.readyState==='open')ch.send(JSON.stringify({type:'browser-restart'}));}});
               }else commit();
             };
             event.track.onunmute=attach;attach();
@@ -2295,7 +2969,11 @@ async function negotiateClient(invitation,transport) {
         if (msg?.type !== 'slot') return;
         p.inputFormat=msg.inputFormat===inputWireVersion?inputWireVersion:0;
         if(controllerGeneration!==(msg.generation || 0) || Number.isInteger(msg.removedController))releaseClient();
-        if(Number.isInteger(msg.removedController)){if(dynamicMode())joinedControllers.splice(msg.removedController,1);else if(msg.removedController===0){selectedIndex=extraPadIndices.shift() ?? null;$('#inputSource').value='gamepad';}else extraPadIndices.splice(msg.removedController-1,1);}
+        if(Number.isInteger(msg.removedController)){if(dynamicMode()){
+          const [removed]=joinedControllers.splice(msg.removedController,1);
+          if(removed?.source==='gamepad')for(const [key,choice] of preparedControllers)if(choice.id===removed.id && choice.index===removed.index)preparedControllers.delete(key);
+          rememberControllerButtons();
+        }else if(msg.removedController===0){selectedIndex=extraPadIndices.shift() ?? null;$('#inputSource').value='gamepad';}else extraPadIndices.splice(msg.removedController-1,1);}
         const previouslyAssigned=assignedSlots.length;
         if(Number.isInteger(msg.removedController) && !msg.dynamicControllers)$('#clientControllerCount').value=String(Math.max(1,msg.slots?.length || 0));
         controllerPendingRemoval=false;p.dynamicControllers=msg.dynamicControllers===true;
@@ -2343,7 +3021,7 @@ async function negotiateClient(invitation,transport) {
     p.grace.update(pc.connectionState);
     updateVideoRefresh();
     playerConnectionUI(pc.connectionState);
-    if (pc.connectionState === 'connected') { p.connectedOnce=true;$('#clientPairing').open = false; $('#clientEnablePad').disabled = !canUseClientInputs() || p.channel?.readyState !== 'open'; controllerUI(enabled); updateDesktopMouse();nativeGuest.prepare(); if (enabled) startInputVideoClock(); tutorialEvent('client-controls-ready'); }
+    if (pc.connectionState === 'connected') { p.connectedOnce=true;clearClientReplyExpiry();$('#clientPairing').open = false; $('#clientEnablePad').disabled = !canUseClientInputs() || p.channel?.readyState !== 'open'; controllerUI(enabled); updateDesktopMouse();nativeGuest.prepare(); if (enabled) startInputVideoClock(); tutorialEvent('client-controls-ready'); }
     if (['failed','disconnected','closed'].includes(pc.connectionState)) {
       suspendClientControls();
       if (invitation) $('#clientPairStatus').textContent = pc.connectionState==='failed'?connectionFailure(pc).report:'Connection interrupted. If it cannot recover, ask the host for a fresh invitation and exchange replies again.';
@@ -2367,6 +3045,7 @@ async function negotiateClient(invitation,transport) {
     if (p.control?.readyState === 'open') { p.ping = { id: crypto.randomUUID(), at: performance.now() }; p.control.send(JSON.stringify({ type: 'ping', id: p.ping.id })); }
     if(p.statsBusy)return;p.statsBusy=true;
     try {
+      guestViewPopouts.reportQuality().catch(()=>{});
       const mediaPC=p.stream.getVideoTracks().length?(p.nativePC || pc):null;
       const videoStats=mediaPC?await mediaPC.getStats():null;
       if (clientPeer !== p || mediaPC && mediaPC!==(p.nativePC || pc)) return;
@@ -2388,7 +3067,44 @@ async function negotiateClient(invitation,transport) {
   if(!transport)return pairingPacket('answer', invitation.pairingId, pc.localDescription, null, null, invitation.expiresAt);
   return p;
 }
-function disconnectClient(message = 'Disconnected',{preserveCameraPreview=false}={}) {
+function clearClientReplyExpiry(){
+  clearTimeout(clientReplyExpiryTimer);clientReplyExpiryTimer=undefined;
+  const expiry=$('#clientReplyExpiry');if(expiry)expiry.hidden=true;
+}
+function updateClientReplyExpiry(){
+  clearTimeout(clientReplyExpiryTimer);
+  if(!lastReply || !clientPeer?.manualReply || clientPeer.connectedOnce || clientPeer.pc.connectionState==='connected'){
+    clearClientReplyExpiry();return false;
+  }
+  const remaining=lastReply.expiresAt-Date.now();
+  // ICE can connect before the host imports a reply. Give the secure handshake
+  // a short grace period only once it is past transport discovery.
+  const finishing=remaining<=0 && remaining>-10000 && clientPeer.pc.sctp?.transport?.state==='connected';
+  if(remaining<=0 && !finishing){
+    const focusReply=document.activeElement?.matches('#clientReplyAction,#clientReplyAlternate,#downloadReply,#copyReply');
+    $('#clientInvitation').value='';
+    $('#clientPairStatus').textContent='This invite expired. Ask your host for a fresh invite.';
+    pairingFeedback('client');
+    disconnectClient('',{preserveCameraPreview:true,inviteExpired:true});
+    if(focusReply){
+      ($('#clientPairSheet').open?$('#clientInvitationFile'):$('#joinFocus'))?.focus({preventScroll:true});
+    }
+    return true;
+  }
+  const expiry=$('#clientReplyExpiry'),seconds=Math.max(0,Math.ceil(remaining/1000));
+  expiry.hidden=false;
+  const text=finishing?'Finishing the connection…':`Reply expires in ${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,'0')}`;
+  if(expiry.textContent!==text)expiry.textContent=text;
+  clientReplyExpiryTimer=setTimeout(updateClientReplyExpiry,finishing?1000:Math.min(remaining,1000));
+  return finishing;
+}
+document.addEventListener('visibilitychange',()=>{if(!document.hidden && clientReplyExpiryTimer)updateClientReplyExpiry();});
+for(const id of ['downloadReply','copyReply'])$(`#${id}`).addEventListener('click',event=>{
+  if(updateClientReplyExpiry()){event.preventDefault();event.stopImmediatePropagation();}
+},true);
+function disconnectClient(message = 'Disconnected',{preserveCameraPreview=false,inviteExpired=false}={}) {
+  if($('#switchInvitePrompt').open)$('#switchInvitePrompt').close('stay');
+  dismissedControllerPrompts.clear();
   clientReplyEpoch++;$('#createReply').disabled=false;
   exitPopout();
   exitClientFullscreen();
@@ -2405,9 +3121,15 @@ function disconnectClient(message = 'Disconnected',{preserveCameraPreview=false}
   $('#clientVideoStats').textContent = 'Waiting for video'; $('#clientStreamDetail').textContent = '—';
   $('#clientDisconnect').disabled = true; $('#clientEnablePad').disabled = true; $('#clientEnablePad').textContent = 'Enable controller'; $('#clientUnmute').disabled = true;
   clientStatus(message);
-  playerConnectionUI('idle'); controllerUI(false);pairingUI('client','idle');
+  playerConnectionUI(inviteExpired?'invite-expired':'idle'); controllerUI(false);pairingUI('client','idle');
 }
 $('#clientDisconnect').onclick = () => {handoff.cancel('Host switch cancelled.');sessionInvites.leaveGuest();disconnectClient();};
+function confirmInviteSwitch(){
+  const prompt=$('#switchInvitePrompt');
+  prompt.returnValue='stay';
+  prompt.showModal();
+  return new Promise(resolve=>prompt.addEventListener('close',()=>resolve(prompt.returnValue==='switch'),{once:true}));
+}
 $('#createReply').onclick = async () => {
   if($('#createReply').disabled)return;
   pairingFeedback('client');
@@ -2420,6 +3142,7 @@ $('#createReply').onclick = async () => {
   }
   const button = $('#createReply'); button.disabled = true;
   const validationEpoch=clientReplyEpoch;
+  const automatic=sessionInvites.preparingReply,transfer=$('#clientPairing').dataset.transfer;
   // Check replacement invites before releasing a working connection.
   if(clientPeer?.pc.connectionState==='connected') {
     let probe;
@@ -2429,9 +3152,18 @@ $('#createReply').onclick = async () => {
       const message='This invite contains an invalid connection description. Ask the host for a fresh invite.';
       pairingFeedback('client',message);$('#clientPairStatus').textContent=message;button.disabled=false;return;
     } finally {probe?.close();}
+    if(!automatic && validationEpoch===clientReplyEpoch && clientPeer?.pc.connectionState==='connected'){
+      const replace=await confirmInviteSwitch();
+      if(validationEpoch!==clientReplyEpoch)return;
+      if(!replace){button.disabled=false;return;}
+      if(invitation.expiresAt<=Date.now()){
+        const message='This invite expired while you were deciding. Ask the host for a fresh invite.';
+        $('#clientPairStatus').textContent=message;pairingFeedback('client',message);button.disabled=false;return;
+      }
+    }
   }
   if(validationEpoch!==clientReplyEpoch)return;
-  if(!sessionInvites.preparingReply)sessionInvites.leaveGuest();
+  if(!automatic)sessionInvites.leaveGuest();
   lastReply = null; $('#clientReply').value = ''; $('#downloadReply').disabled = true;
   let replyEpoch=clientReplyEpoch;
   try {
@@ -2445,20 +3177,19 @@ $('#createReply').onclick = async () => {
     const reply=await negotiateClient(invitation);
     if(replyEpoch!==clientReplyEpoch)return;
     lastReply=reply;
+    clientPeer.manualReply=!automatic;
     if (invitation.fallback) { fallbackSession = invitation; connectFallback(invitation); }
     $('#clientReply').value = JSON.stringify(lastReply, null, 2); $('#downloadReply').disabled = false;$('#copyReply').disabled=false;
     pairingUI('client', 'ready'); $('#clientPairStatus').textContent = 'Save your reply file and send it back to your friend. Keep this page open.';
+    if(clientPeer.manualReply){updateClientReplyExpiry();if(replyEpoch!==clientReplyEpoch)return;}
     tutorialEvent('client-reply-ready');
-    if(!sessionInvites.preparingReply && $('#clientPairing').dataset.transfer!=='text'){autoDownloadPairing($('#downloadReply'));$('#clientPairStatus').textContent='Reply download started. Send the file back to your friend and keep this page open.';}
-    else if(!sessionInvites.preparingReply){$('#clientReply').closest('details').open=true;$('#clientPairStatus').textContent='Copy your reply text and send it back to the host. Keep this page open.';}
+    if(!automatic && transfer!=='text'){autoDownloadPairing($('#downloadReply'));$('#clientPairStatus').textContent='Reply download started. Send the file back to your friend and keep this page open.';}
+    else if(!automatic){$('#clientReply').closest('details').open=true;$('#clientPairStatus').textContent='Copy your reply text and send it back to the host. Keep this page open.';}
   } catch (error) { if(replyEpoch===clientReplyEpoch){$('#clientPairStatus').textContent = error.message;pairingFeedback('client',error.message); disconnectClient(error.message);pairingUI('client','error');} }
   finally { if(replyEpoch===clientReplyEpoch){button.disabled = false; if (!lastReply) pairingUI('client', 'error');} }
 };
 $('#downloadReply').onclick = () => { if (lastReply) downloadPairing(lastReply); };
-$('#clientEnablePad').onclick = () => {
-  setControllerSharing(!enabled);
-  tutorialEvent(enabled && (!dynamicMode() || assignedSlots.length) ? 'client-controller-enabled' : 'client-controls-ready');
-};
+$('#clientEnablePad').onclick = () => setControllerSharing(!enabled);
 function setControllerSharing(value){
   if(value && reverseControllers?.nativeActive()){toast('Turn off native controller receiving, or choose App-only, before sharing controllers back.');value=false;}
   $('#clientJoinControllers').checked=value;enabled=value && canUseClientInputs();
@@ -2466,6 +3197,7 @@ function setControllerSharing(value){
   nativeGuest.controllerSharingChanged();
   if(!value){releaseClient();stopInputVideoClock();}else if(enabled)startInputVideoClock();
   controllerUI(enabled);clientStatus(value?'Controller sharing on':'Controller sharing off · local input released');refreshGamepads();updateDesktopMouse();
+  if(clientPeer?.controllersRequested)tutorialEvent(enabled && (!dynamicMode() || assignedSlots.length) ? 'client-controller-enabled' : 'client-controls-ready');
 }
 $('#backgroundGamepad').onchange = () => {
   backgroundGamepadPreference=$('#backgroundGamepad').checked;
@@ -2488,10 +3220,7 @@ $('#clientReceiveVideo').onchange = () => {
 };
 $('#clientMediaToggle').onclick = () => { $('#clientReceiveVideo').checked = !$('#clientReceiveVideo').checked; $('#clientReceiveVideo').dispatchEvent(new Event('change')); };
 $('#clientVideoToggle').onchange = e => { $('#clientVideo').hidden = !e.target.checked; if (e.target.checked) $('#clientVideo').play().catch(() => {}); else { guestTiles.setLayout('single');exitPopout(); $('#clientVideo').pause(); } clientPeer?.playback?.refresh();updatePopout(); };
-$('#clientUnmute').onclick = () => {
-  if(!$('#clientAudio').playbackBlocked)$('#clientVideo').muted = !$('#clientVideo').muted;
-  writePreference('sharedSound',!$('#clientVideo').muted);soundUI($('#clientVideo').muted);clientPeer?.playback?.play();
-};
+$('#clientUnmute').onclick = () => toggleGuestScreenSound(guestViewPopouts.selected);
 $('#clientReleaseInputs').onclick=()=>{
   setControllerSharing(false);
   $('#clientDesktopMouse').checked=false;$('#clientDesktopTyping').checked=false;
@@ -2514,25 +3243,45 @@ $('#clientRefreshVideo').onclick=()=>{
 };
 fullscreenToolbar($('#clientStage'),$('#clientToolbar'));
 function exitPopout() {
+  floatingScreens.clear();
   if (document.pictureInPictureElement === $('#clientVideo')) return document.exitPictureInPicture().catch(() => {});
 }
 function exitClientFullscreen(){
   if([$('#clientStage'),$('#clientVideo')].includes(document.fullscreenElement))return document.exitFullscreen().catch(()=>{});
 }
+function canFloatScreen(source){return !!source && (!!source.stream || $('#clientReceiveVideo').checked && $('#clientVideoToggle').checked);}
 function updatePopout() {
   const video = $('#clientVideo'), button = $('#clientPopout');
   const active = document.pictureInPictureElement === video;
   const supported = !!document.pictureInPictureEnabled && typeof video.requestPictureInPicture === 'function';
-  button.disabled = !active && (!supported || !video.srcObject || video.readyState < 2 || !video.videoWidth || video.hidden);
-  button.title = !supported ? 'Use desktop Chrome or Edge for pop-out video' : 'Watch in a floating Picture-in-Picture window';
-  button.setAttribute('aria-label', active ? 'Close pop-out video' : 'Pop out video');
-  button.setAttribute('aria-pressed', String(active)); button.classList.toggle('active', active);
-  $('#clientPopout .popout-label').textContent = active ? 'Bring back' : 'Pop out';
+  const screens=guestTiles.sources.filter(source=>!guestTiles.isCamera(source) && canFloatScreen(source));
+  const popoutAvailable=screens.length>0;
+  const floating=floatingScreens.entries.size>0,shown=active || floating;
+  button.disabled = !shown && !popoutAvailable && (!supported || !video.srcObject || video.readyState < 2 || !video.videoWidth || video.hidden);
+  const label=shown?'Close pop-out':'Pop out';
+  button.title = shown?'Close the pop-out window':'Watch in a separate window';
+  button.setAttribute('aria-label',label);
+  button.setAttribute('aria-pressed', String(shown)); button.classList.toggle('active', shown);
+  $('#clientPopout .popout-label').textContent = label;
+  const quick=$('#clientFloatScreens');
+  if(quick){
+    quick.hidden=!popoutAvailable && !supported && !shown;
+    quick.disabled=button.disabled;
+    quick.setAttribute('aria-pressed',String(shown));
+    quick.querySelector('span').textContent=label;
+    quick.setAttribute('aria-label',label);
+    quick.removeAttribute('title');
+  }
 }
 $('#clientPopout').onclick = async () => {
   try {
-    if (document.pictureInPictureElement === $('#clientVideo')) await document.exitPictureInPicture();
-    else await $('#clientVideo').requestPictureInPicture();
+    if (document.pictureInPictureElement === $('#clientVideo') || floatingScreens.entries.size)await exitPopout();
+    else {
+      const screens=guestTiles.sources.filter(source=>!guestTiles.isCamera(source) && canFloatScreen(source));
+      const featured=guestTiles.maximized ?? (guestTiles.mode==='single'?guestTiles.localSingle || guestTiles.primary:guestTiles.featured);
+      if(screens.length)await floatingScreens.open(screens,{mode:guestTiles.maximized===null?guestTiles.mode:'single',featured,remember:guestTiles.maximized===null});
+      else await $('#clientVideo').requestPictureInPicture();
+    }
   } catch { toast('Pop-out video is unavailable. Try desktop Chrome or Edge with the stream playing.'); }
   updatePopout();
 };
@@ -2555,7 +3304,7 @@ $('#clientFullscreen').onclick = async () => {
     else toast('Use your browser’s fullscreen control.');
   } catch { toast('Click the video and try fullscreen again.'); }
 };
-$('#clientVideo').addEventListener('dblclick', e => { if ($('#clientDesktopMouse').checked) return; e.preventDefault(); $('#clientFullscreen').click(); });
+$('#clientVideo').addEventListener('dblclick', e => { if ($('#clientDesktopMouse').checked || guestTiles.active) return; e.preventDefault(); $('#clientFullscreen').click(); });
 document.addEventListener('fullscreenchange', () => {
   const fullscreen = document.fullscreenElement === $('#clientStage') || document.fullscreenElement === $('#clientVideo');
   $('#clientFullscreen').setAttribute('aria-pressed', String(fullscreen));
@@ -2634,10 +3383,12 @@ function swapChatRoles(active){
   const idle=active===hostChat?clientChat:hostChat;idle.setReady(false);filePriorities();
 }
 function clearOldPairing(){
+  clearClientReplyExpiry();
   clearTimeout(fallbackReconnectTimer);fallbackSession=null;fallbackReady=false;
   const socket=fallbackWs;fallbackWs=null;socket?.close();
   fallbackSession=null;lastReply=null;$('#clientReply').value='';$('#downloadReply').disabled=true;$('#copyReply').disabled=true;
-  lastInvitation=null;invitations.clear();$('#hostInvitation').value='';$('#downloadInvitation').disabled=true;$('#copyInvitation').disabled=true;
+  for(const entry of invitations.values())clearTimeout(entry.p.expiryTimer);
+  lastInvitation=null;invitations.clear();cancelledInvitations.clear();$('#hostInvitation').value='';$('#downloadInvitation').disabled=true;$('#copyInvitation').disabled=true;updateInviteExpiry();
   $('#clientInvitation').value='';$('#hostReply').value='';
   sessionInvites.leaveGuest();sessionGuestPeers.clear();
 }
@@ -2650,7 +3401,18 @@ function resetHandoffDesktop(){
 const handoff=new HostHandoff({
   isHost:()=>!!hostRoom && !$('#hostPanel').hidden,
   canHost:canBecomeHost,
-  confirm:()=>confirm('Become the host? The current game share will stop. Your voice and cameras stay connected. Choose your game window after switching; desktop control starts off.'),
+  confirm:()=>new Promise(resolve=>{
+    const dialog=$('#handoffPrompt');
+    dialog.returnValue='';
+    dialog.addEventListener('close',()=>resolve(dialog.returnValue==='accept'),{once:true});
+    dialog.showModal();
+  }),
+  authorize:async(target,members)=>{
+    if(!hostPeers.get(target)?.localHandoff)return;
+    const result=await localRequest(hostWs,'handoff-prepare',{peerId:target,members:members.map(member=>member.id)},10000);
+    if(!result?.ticket)throw Error('The local app could not start the host switch. You are still hosting.');
+    return result.ticket;
+  },
   upstream:()=>clientPeer?.control,
   links:()=>new Map([...hostPeers].filter(([,p])=>p.pc.connectionState==='connected' && p.control?.readyState==='open').map(([id,p])=>[id,p.control])),
   members:()=>[{id:'host',wantsController:true,canHost:!!localHostPlatform},...[...hostPeers].filter(([,p])=>p.pc.connectionState==='connected' && p.control?.readyState==='open').map(([id,p])=>({id,wantsController:p.wantsController,canHost:p.canHost===true,name:p.sessionName}))],
@@ -2661,9 +3423,10 @@ const handoff=new HostHandoff({
   screenPolicy:()=>({allowed:hostScreens.guestVideoAllowed,limit:hostScreens.sessionLimit,blocks:[...hostScreens.cameraBlocks],limits:[...hostScreens.memberLimits]}),
   chatSnapshot:()=>hostChat.snapshot(),
   moderationSnapshot:()=>participants?.snapshot(),
-  status:(message,cancellable)=>{const notice=$('#handoffNotice');notice.hidden=false;$('#handoffStatus').textContent=message;$('#handoffCancel').hidden=!cancellable;const switching=handoff.state?.phase==='committing';$('#hostEnd').disabled=switching || !hostRoom;$('#clientDisconnect').disabled=switching || !clientPeer;},
+  status:(message,cancellable)=>{const notice=$('#handoffNotice');notice.hidden=false;$('#handoffStatus').textContent=message;$('#handoffCancel').hidden=!cancellable;$('#handoffDismiss').hidden=handoff.busy;const switching=handoff.state?.phase==='committing';$('#hostEnd').disabled=switching || !hostRoom;$('#clientDisconnect').disabled=switching || !clientPeer;},
   lock:locked=>{
     if(locked)keyboardMapping.dialog.close();
+    else $('#handoffPrompt').close();
     sessionInvites.handoffActive=locked;document.body.dataset.handoff=String(locked);
     for(const room of [hostChat,clientChat]){room.locked=locked;room.renderState();}
     for(const voice of [hostVoice,clientVoice,hostCamera,clientCamera,hostScreens,clientScreens]){voice.handoffLocked=locked;voice.render();}
@@ -2675,6 +3438,12 @@ const handoff=new HostHandoff({
     if(!canBecomeHost())throw Error('Run the local app on the new host and end any other hosted session first.');
     clearPreparedDesktop();hostOverlayActive=false;hostOverlayPending=null;s.preparingRoom=true;await stopCapture();$('#hostAudioOnly').checked=false;
     if(handoff.state!==s)return;
+    if(s.ticket){
+      const opening=connectHost(true);s.preparedWs=hostWs;await opening;
+      if(handoff.state!==s)return;
+      const prepared=await localRequest(s.preparedWs,'handoff-stage',{ticket:s.ticket},20000);
+      s.localPeers=prepared.mapping;s.ice=prepared.ice;return;
+    }
     await connectHost();s.preparedWs=hostWs;
     await waitFor(()=>{if(s.preparedWs?.lastError || s.preparedWs?.readyState===WebSocket.CLOSED)throw Error(s.preparedWs.lastError || 'The local host could not start');return !!hostRoom && injectWs?.readyState===WebSocket.OPEN;},'The local host could not start');
     if(handoff.state!==s){await this.rollback(s);return;}
@@ -2682,10 +3451,16 @@ const handoff=new HostHandoff({
     s.ice=await fetchIce(hostRoom.roomId);
   },
   async register(member,s){
-    const registered=await registerManualPeer(member.wantsController?'play':'watch');
+    const registered=s.localPeers?.[member.id] || await registerManualPeer(member.wantsController?'play':'watch');
     return {peerId:registered.peerId,slot:registered.slot,wantsController:registered.wantsController,ice:s.ice,name:member.name,canHost:member.canHost};
   },
+  waitForTransfer:s=>waitFor(()=>s.transferred || handoff.state!==s,'The local app could not transfer the session.'),
   async commit(s,roster,cameras=[],chat,moderation,screens=[],screenPolicy){
+    if(s.promoted && s.ticket){
+      await localRequest(s.preparedWs,'handoff-commit',{ticket:s.ticket},15000);
+      await waitFor(()=>hostRoom && injectWs?.readyState===WebSocket.OPEN,'The new host could not start.');
+    }
+    if(handoff.state!==s)return;
     clearOldPairing();resetHandoffDesktop();
     if(s.promoted){
       await exitPopout();await exitClientFullscreen();
@@ -2698,16 +3473,17 @@ const handoff=new HostHandoff({
         const p=await makeHostPeer(stage.info.peerId,stage.info.slot,true,stage.info.ice,stage.info,stage.transport);
         p.canHost=stage.info.canHost;p.sessionName=stage.info.name;
       }
-      participants?.rebase(moderation,s.mapping);hostSessionUI(true);hostShares.setActive(true);showPanel('host');$('#hostLiveSource').open=true;renderPeers();
+      participants?.rebase(moderation,s.mapping);hostSessionUI(true);hostShares.setActive(true);callShell.closeAll();showPanel('host');$('#hostLiveSource').open=true;renderPeers();
     }else{
       if(s.old.host){
+        if(s.local)hostWs=null; // The backend already stopped the old capture and revoked its permissions.
         await stopCapture();
         send(hostWs,{type:'input-policy',allowKeyboard:keyboardAllowed,desktopMouse:false,desktopKeyboard:false,desktopFullAccess:false});
         send(hostWs,{type:'cursor-overlay',enabled:false});
-        for(const [id,p] of hostPeers){hostViewPopouts.closePeer(p);stopPeerVideo(p);releasePeer(id);for(const key of ['recovery','expiryTimer','updateTimeout','fallbackTimer','nativeTimeout'])clearTimeout(p[key]);hostDiagnostics.removeSource(id);}
+        for(const [id,p] of hostPeers){hostViewPopouts.closePeer(p);stopPeerVideo(p);releasePeer(id);for(const key of ['recovery','expiryTimer','updateTimeout','fallbackTimer','nativeTimeout','qualityRequestTimer'])clearTimeout(p[key]);hostDiagnostics.removeSource(id);}
         hostPeers.clear();hostWs=null;hostRoom=null;clearTimeout(injectReconnect);const socket=injectWs;injectWs=null;socket?.close();
         for(const request of nativeRequests.values()){clearTimeout(request.timer);request.reject(Error('Host switched'));}nativeRequests.clear();
-        hostSessionUI(false);hostShares.setActive(false);swapVoiceRoles(s.old.voice);swapCameraRoles(s.old.camera);swapScreenRoles(s.old.screen);swapChatRoles(s.old.chat);joinedControllers.length=0;buttonSnapshots.clear();enabled=false;
+        resetScreenOverrides();hostSessionUI(false);hostShares.setActive(false);updateScreenOverrides();swapVoiceRoles(s.old.voice);swapCameraRoles(s.old.camera);swapScreenRoles(s.old.screen);swapChatRoles(s.old.chat);joinedControllers.length=0;buttonSnapshots.clear();enabled=false;
       }
       assignedSlot=null;assignedSlots=[];controllerGeneration=0;controllerReceipts.length=0;hostControllerCapacity=null;
       const stage=s.client;await stage.transport.ready();
@@ -2715,7 +3491,7 @@ const handoff=new HostHandoff({
       // send voice hello until everyone has completed the switch.
       clientVoice.rebase({host:false,mapping:s.mapping,roster,send:voiceSend(stage.transport.channels.get('control'))});clientCamera.rebase({host:false,mapping:s.mapping,roster:cameras,send:voiceSend(stage.transport.channels.get('control'))});clientScreens.rebase({host:false,mapping:s.mapping,roster:screens,send:voiceSend(stage.transport.channels.get('control'))});clientChat.rebase({host:false,mapping:s.mapping,snapshot:chat,stage:$('#clientStage')});
       await negotiateClient(stage.info,stage.transport);
-      $('#clientDisconnect').disabled=false;$('#clientUnmute').disabled=false;showPanel('client');
+      $('#clientDisconnect').disabled=false;$('#clientUnmute').disabled=false;callShell.closeAll();showPanel('client');
     }
     desktopAvailability();document.dispatchEvent(new Event('mobile-layout'));
   },
@@ -2734,10 +3510,16 @@ const handoff=new HostHandoff({
   interrupted(s){
     if(s.applied)this.finalize(s);
     else if(s.promoted){send(hostWs,{type:'end'});hostWs?.close();}
-    else if(s.old.host){send(s.old.ws,{type:'end'});s.old.ws?.close();}
+    else if(s.old.host && (!s.local || s.transferred)){send(s.old.ws,{type:'end'});s.old.ws?.close();}
   }
 });
 $('#handoffCancel').onclick=()=>handoff.cancel();
+$('#handoffDismiss').onclick=()=>{
+  $('#handoffNotice').hidden=true;
+  const side=document.body.dataset.mode==='host'?'host':'client';
+  const people=$(`#${side}CallPeople`);
+  (people.getClientRects().length?people:$(side==='host'?'#modeHost':'#modeClient')).focus({preventScroll:true});
+};
 const keyboardMapping=new KeyboardMapping($('#keyboardMapping'),{
   release:()=>{
     const needsLocalDevices=nativeGuest.selection.some(id=>id.startsWith('keyboard:') || id.startsWith('mouse:'));
@@ -2749,7 +3531,7 @@ const keyboardMapping=new KeyboardMapping($('#keyboardMapping'),{
   },
   getPads:inputGamepads,profileFor,
   nativeActive:()=>nativeGuest.latched,
-  afterClose:rememberControllerButtons,
+  afterClose:()=>{rememberControllerButtons();renderConnectedControllers();},
   defaultDevice:()=>hasKeyboardController()?'keyboard':selectedIndex ?? [...inputGamepads()].find(p=>p && p.connected!==false)?.index ?? 'keyboard',
   saveProfile:(gp,profile)=>{sessionProfiles.set(gp.id,profile);let saved=true;try{localStorage.setItem(storageKey(gp),JSON.stringify(profile));}catch{saved=false;}refreshGamepads();return saved;},
   changed:bindings=>{
@@ -2760,6 +3542,60 @@ const keyboardMapping=new KeyboardMapping($('#keyboardMapping'),{
     line.append(kbd,document.createTextNode(' '+(buttonLabels[key] || 'Left stick right')));help.append(line);
   }
 }});
+const hostLocalPadList=$('#hostLocalPads');
+const hostMapButton=document.createElement('button');
+hostMapButton.type='button';hostMapButton.className='button small-button';
+hostMapButton.textContent='Controller mappings';
+hostMapButton.onclick=()=>keyboardMapping.open([...(navigator.getGamepads?.() || [])].find(pad=>pad && pad.connected!==false)?.index ?? 'keyboard');
+$('#hostControllerMapping').append(hostMapButton);
+let hostPadFrame=null;
+function paintHostPads(){
+  hostPadFrame=null;
+  const menu=$('#hostControllersSheet'),people=$('#hostPeopleSheet');
+  if(document.hidden || document.body.dataset.mode!=='host' || !menu.open && !people.open)return;
+  if(menu.open){
+    const pads=[...(navigator.getGamepads?.() || [])].filter(pad=>pad && pad.connected!==false);
+    const signature=JSON.stringify(pads.map(({index,id})=>[index,id]));
+    if(hostLocalPadList.dataset.signature!==signature){
+      const open=new Set([...hostLocalPadList.querySelectorAll('.pad-live-test[open]')].map(test=>test.dataset.padIndex));
+      hostLocalPadList.dataset.signature=signature;
+      hostLocalPadList.replaceChildren(...pads.map(pad=>{
+        const item=document.createElement('div'),title=document.createElement('strong'),map=document.createElement('button');
+        item.className='guest-controller';title.textContent=friendlyControllerName(pad.id);title.title=pad.id;
+        map.type='button';map.className='button small-button host-pad-map';map.textContent='Map';
+        map.setAttribute('aria-label',`Map ${title.textContent}`);map.onclick=()=>keyboardMapping.open(pad.index);
+        item.append(title,map);
+        const test=addControllerTest(item);test.dataset.padIndex=pad.index;
+        test.open=open.has(String(pad.index)) || pads.length===1;
+        return item;
+      }));
+      if(!pads.length)hostLocalPadList.textContent='Press a button on a controller to detect it.';
+    }
+    for(const test of hostLocalPadList.querySelectorAll('.pad-live-test[open]')){
+      const pad=pads.find(item=>item.index===Number(test.dataset.padIndex));
+      if(!pad)continue;
+      const profile=profileFor(pad);
+      try{paintControllerState(test,packGamepadState(pad,profile,profile?.deadzone ?? Number($('#deadzone').value)));}
+      catch{paintControllerTest(test,pad,'Map this controller to test its layout.');}
+    }
+  }
+  const root=menu.open?$('#hostGuestPads'):$('#peerList'),now=performance.now();
+  for(const test of root.querySelectorAll('.pad-live-test[open][data-peer-id]')){
+    if(!test.getClientRects().length)continue;
+    const peer=hostPeers.get(test.dataset.peerId),input=peer?.controllerStates?.get(test.dataset.slot);
+    const state=peer?.pc.connectionState==='connected' && peer.controllerPresence?.enabled!==false && input && now-input.at<700?input.state:null;
+    paintControllerState(test,state,state?undefined:peer?.controllerPresence?.enabled===false?'Guest sharing is paused.':'Waiting for guest input.');
+  }
+  hostPadFrame=requestAnimationFrame(paintHostPads);
+}
+function refreshHostPadPanels(){
+  if($('#hostControllersSheet').open)renderHostGuestPads();
+  const open=$('#hostControllersSheet').open || $('#hostPeopleSheet').open;
+  if(!open || document.hidden){if(hostPadFrame!==null)cancelAnimationFrame(hostPadFrame);hostPadFrame=null;return;}
+  if(hostPadFrame===null)hostPadFrame=requestAnimationFrame(paintHostPads);
+}
+document.addEventListener('toggle',event=>{if(event.target.matches('#hostControllersSheet,#hostPeopleSheet'))refreshHostPadPanels();},true);
+document.addEventListener('visibilitychange',refreshHostPadPanels);
 for(const id of ['clientResolution','clientMinimumResolution','clientFramerate','clientCodec','clientAutoThrottle']){const el=$(`#${id}`),saved=readPreference(id);if(el.type==='checkbox'){if(typeof saved==='boolean')el.checked=saved;}else if(typeof saved==='string' && [...el.options].some(o=>o.value===saved && !o.disabled))el.value=saved;el.addEventListener('change',()=>writePreference(id,el.type==='checkbox'?el.checked:el.value));}
 const guestView=new GuestViewCheck({peers:()=>hostPeers,notify:toast});
 sessionPresets({root:$('#hostSourceSetup'),busy:()=>!!hostRoom || captureBusy || !!captureStream || nativeCapture || nativeAudioBusy || nativeAudioReady,source:()=>({method:$('#captureBackend').value,label:$('#captureTarget').selectedOptions[0]?.textContent || '',audioLabel:$('#nativeAudioTarget').selectedOptions[0]?.textContent || ''}),changed:()=>{lastSharePending=false;rememberedBrowserShare=false;selectedSource='none';captureArea.value=null;captureArea.render();lastSourceNote.hidden=true;renderCaptureSources();changeStreamQuality();rememberHostSetup();},restore:async source=>{if(!source)throw Error('This preset has no saved source. Choose a screen or window.');if(source.method==='browser'){$('#captureBackend').value='browser';renderCaptureSources();$('#chooseBrowserSource').click();return;}if(!nativeCaptureAvailable)throw Error('Native capture is unavailable on this computer. Use browser sharing.');$('#captureBackend').value='native';await refreshCaptureTargets();const target=captureSourceTargets.find(t=>t.label===source.label);if(!target)throw Error('Saved window is unavailable. Open it or choose a different source.');const audio=[...$('#nativeAudioTarget').options].find(o=>o.textContent===source.audioLabel);if(audio)$('#nativeAudioTarget').value=audio.value;$('#captureTarget').value=target.id;await $('#captureTarget').onchange();}});
@@ -2781,8 +3617,8 @@ inputStreams=new AppInputs({state:()=>({hosting:!!hostRoom && !hostEnding,room:h
 $('#clientJoinControllers').onchange=()=>setControllerSharing($('#clientJoinControllers').checked);
 reverseControllers=new ReverseControllers({state:()=>({hosting:!!hostRoom && !hostEnding,client:clientPeer}),pads:()=>[...(navigator.getGamepads?.() || [])],pack:gp=>packGamepadState(gp,profileFor(gp),profileFor(gp)?.deadzone ?? Number($('#deadzone').value)),pauseOutgoing:()=>{if($('#clientJoinControllers').checked){$('#clientJoinControllers').checked=false;$('#clientJoinControllers').dispatchEvent(new Event('change',{bubbles:true}));}},notify:toast,hostAPI:packet=>inputStreams.api.publish({peerId:'host',...packet})});
 participants=new Participants({screens:side=>side==='host'?hostScreens:clientScreens,state:()=>({hosting:!!hostRoom,peers:hostPeers}),voice:side=>side==='host'?hostVoice:clientVoice,camera:side=>side==='host'?hostCamera:clientCamera});
-const screenLayouts=new ScreenLayouts({cursors:hostCursors,nativeCommand,quality:()=>captureQuality,hostShareList:()=>[...(!audioOnly() && hostMediaActive()?[{id:'',label:captureSourceTargets.find(t=>t.id===selectedSource)?.label || 'Main screen'}]:[]),...hostShares.sources.values()],removeShare:id=>id?hostShares.remove(id):stopCapture(),mediaControls:owner=>participantMediaControls('host',owner),hostScreens:()=>hostScreens,clientScreens:()=>clientScreens,hostCamera:()=>hostCamera,clientCamera:()=>clientCamera,guestTiles,hostSources:()=>{
-  const sources=[];if(previewWanted()){const stream=nativeCapture?$('#hostPreview').srcObject:captureStream;if(!audioOnly() && stream?.getVideoTracks().length)sources.push({id:'host-main',owner:'host',kind:'screen',label:'Your main screen',stream,viewOnly:true,remove:()=>stopCapture()});for(const source of hostShares.sources.values())sources.push({id:`host-${source.id}`,owner:'host',kind:'screen',label:source.label,...(source.stream?{stream:source.stream}:{}),viewOnly:true,remove:()=>hostShares.remove(source.id)});}return sources;
+const screenLayouts=new ScreenLayouts({cursors:hostCursors,nativeCommand,quality:hostScreenQuality,notify:toast,hostShareList:()=>[...(!audioOnly() && hostMediaActive()?[{id:'',label:captureSourceTargets.find(t=>t.id===selectedSource)?.label || 'Main screen',...primarySoundControl()}]:[]),...[...hostShares.sources.values()].map(source=>({...source,...hostShares.audioControl(source)}))],removeShare:id=>id?hostShares.remove(id):stopCapture(),mediaControls:owner=>participantMediaControls('host',owner),hostScreens:()=>hostScreens,clientScreens:()=>clientScreens,hostCamera:()=>hostCamera,clientCamera:()=>clientCamera,guestTiles,hostSources:()=>{
+  const sources=[];if(previewWanted()){const stream=nativeCapture?$('#hostPreview').srcObject:captureStream;if(!audioOnly() && stream?.getVideoTracks().length)sources.push({id:'host-main',qualityId:'',owner:'host',kind:'screen',label:'Your main screen',stream,viewOnly:true,remove:()=>stopCapture(),...primarySoundControl()});for(const source of hostShares.sources.values())sources.push({id:`host-${source.id}`,qualityId:source.id,owner:'host',kind:'screen',label:source.label,...(source.stream?{stream:source.stream}:{}),viewOnly:true,remove:()=>hostShares.remove(source.id),...hostShares.audioControl(source)});}return sources;
 }});
 
 function prepareGuestMedia(){const preparing=document.body.dataset.mode==='client';clientCamera.setPreparing(preparing);clientVoice.setPreparing(preparing);}

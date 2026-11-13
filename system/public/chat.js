@@ -28,15 +28,19 @@ export function chatLink(channel,receive,closed=()=>{}){
 export class SessionChat{
   constructor(root,{host=false,stage,onFocus=()=>{}}={}){
     Object.assign(this,{root,host,stage,onFocus});this.history=new ChatHistory();this.links=new Map();this.authors=new Map();this.unread=0;this.ready=false;
-    root.className='chat-card';root.innerHTML=`<div data-chat="messages" class="chat-messages" role="log" aria-live="polite" aria-relevant="additions" aria-label="Call messages" tabindex="0"></div><p data-chat="empty" class="chat-empty">Say hello to the call.</p><form class="chat-compose"><label class="sr-only" for="${root.id}Input">Message the call</label><textarea id="${root.id}Input" data-chat="input" rows="1" maxlength="${chatTextLimit}" placeholder="Message the call…" aria-describedby="${root.id}Note"></textarea><button data-chat="send" type="submit" class="button primary" aria-label="Send message" title="Send message">${icon('send')}</button></form><p data-chat="status" class="chat-status" role="status"></p><p id="${root.id}Note" class="chat-session-note" title="New joiners receive the recent conversation. Messages are cleared when the call ends.">Only this call · latest 100 messages</p>`;
+    root.className='chat-card';root.innerHTML=`<div class="chat-history"><div data-chat="messages" class="chat-messages" role="log" aria-live="polite" aria-relevant="additions" aria-label="Call messages" tabindex="0"></div><button data-chat="latest" type="button" class="button small-button chat-latest" hidden>${icon('chevron')}<span>Latest messages</span></button></div><p data-chat="empty" class="chat-empty">Say hello to the call.</p><form class="chat-compose"><label class="sr-only" for="${root.id}Input">Message the call</label><textarea id="${root.id}Input" data-chat="input" rows="1" maxlength="${chatTextLimit}" placeholder="Message the call…" aria-describedby="${root.id}Note"></textarea><button data-chat="send" type="submit" class="button primary" aria-label="Send message" title="Send message">${icon('send')}</button></form><p data-chat="status" class="chat-status" role="status"></p><div class="chat-footer"><p id="${root.id}Note" class="chat-session-note" title="New joiners receive the recent conversation. Messages are cleared when the call ends.">Only this call · latest 100 messages</p></div>`;
     this.$=name=>root.querySelector(`[data-chat="${name}"]`);
+    this.newer=0;
+    this.$('messages').addEventListener('scroll',()=>this.updateLatest(),{passive:true});
+    this.$('latest').onclick=()=>this.jumpToLatest();
     this.peek=document.createElement('button');this.peek.type='button';this.peek.className='chat-peek';this.peek.hidden=true;this.peek.setAttribute('aria-label','Open call chat');stage.append(this.peek);this.peek.onclick=()=>this.onOpen?.();
     for(const name of ['pointerdown','pointermove','pointerup','wheel','keydown'])this.peek.addEventListener(name,e=>e.stopPropagation());
     root.querySelector('form').onsubmit=event=>{event.preventDefault();this.post(this.$('input').value);};
     this.$('input').onkeydown=event=>{if(event.key!=='Escape')event.stopPropagation();if(event.key==='Enter' && !event.shiftKey && !event.isComposing){event.preventDefault();this.post(this.$('input').value);}};
     root.addEventListener('focusin',()=>this.onFocus());this.$('input').oninput=()=>this.renderState();
-    this.inputObserver=new ResizeObserver(()=>this.sizeInput());this.inputObserver.observe(this.$('input'));
-    window.addEventListener('pagehide',()=>{this.inputObserver.disconnect();this.setReady(false);});this.render();this.files=chatAttachments(this);
+    this.resizeObserver=new ResizeObserver(()=>{this.sizeInput();this.updateLatest();});
+    this.resizeObserver.observe(this.$('input'));this.resizeObserver.observe(this.$('messages'));
+    window.addEventListener('pagehide',()=>{this.resizeObserver.disconnect();this.setReady(false);});this.render();this.files=chatAttachments(this);
   }
   state(){this.root.dispatchEvent(new Event('chat-state',{bubbles:true}));}
   setReady(ready){
@@ -105,10 +109,27 @@ export class SessionChat{
   }
   ackPending(){if(this.pending && this.history.entries.some(e=>e.request===this.pending.request && e.author===this.self)){if(chatText(this.$('input').value)===this.pending.text)this.$('input').value='';this.pending=null;clearTimeout(this.postTimer);this.note='';}}
   arrived(entry){
-    if(entry.author===this.self || this.open)return;this.unread=Math.min(chatLimit,this.unread+1);
+    if(entry.author===this.self)return;
+    if(this.open){if(!this.atLatest())this.newer=Math.min(chatLimit,this.newer+1);return;}
+    this.unread=Math.min(chatLimit,this.unread+1);
     this.peek.replaceChildren();const name=document.createElement('strong'),text=document.createElement('span');name.textContent=entry.name;text.textContent=entry.text.slice(0,160);this.peek.append(name,text);this.peek.hidden=false;clearTimeout(this.peekTimer);this.peekTimer=setTimeout(()=>{this.peek.hidden=true;},5000);
   }
-  setOpen(open){this.open=open;if(open){this.unread=0;this.peek.hidden=true;this.$('messages').scrollTop=this.$('messages').scrollHeight;}this.state();}
+  atLatest(){const log=this.$('messages');return log.scrollHeight-log.scrollTop-log.clientHeight<24;}
+  updateLatest(){
+    const button=this.$('latest'),label=button.querySelector('span');
+    const hidden=!this.ready || !this.open || this.atLatest();
+    if(hidden)this.newer=0;
+    if(hidden && document.activeElement===button)this.$('messages').focus({preventScroll:true});
+    button.hidden=hidden;
+    const text=this.newer?`${this.newer} new ${this.newer===1?'message':'messages'}`:'Latest messages';
+    if(label.textContent!==text)label.textContent=text;
+  }
+  jumpToLatest(){const log=this.$('messages');log.scrollTop=log.scrollHeight;this.updateLatest();}
+  setOpen(open){
+    this.open=open;
+    if(open){this.unread=0;this.peek.hidden=true;this.jumpToLatest();}else this.updateLatest();
+    this.renderState();
+  }
   sizeInput(){
     const input=this.$('input');if(!input.getClientRects().length)return;const key=JSON.stringify([input.value,input.getBoundingClientRect().width]);if(key===this.inputSizeKey)return;this.inputSizeKey=key;input.style.height='auto';input.style.height=`${Math.max(40,Math.min(120,input.scrollHeight+2))}px`;
   }
@@ -119,12 +140,19 @@ export class SessionChat{
     if(this.$('status').textContent!==status)this.$('status').textContent=status;this.state();
   }
   render(){
-    const log=this.$('messages'),nearBottom=log.scrollHeight-log.scrollTop-log.clientHeight<48,scroll=log.scrollTop;
-    this.rows ||= new Map();if(this.renderedEpoch!==this.history.epoch){this.rows.clear();log.replaceChildren();this.renderedEpoch=this.history.epoch;}
-    const wanted=new Set(this.history.entries.map(e=>e.seq));for(const [seq,row] of this.rows)if(!wanted.has(seq)){row.remove();this.rows.delete(seq);}
+    const log=this.$('messages'),nearBottom=this.atLatest(),scroll=log.scrollTop;
+    this.rows ||= new Map();
+    const changedSession=this.renderedEpoch!==this.history.epoch;
+    if(changedSession){this.newer=0;this.rows.clear();log.replaceChildren();this.renderedEpoch=this.history.epoch;}
+    const wanted=new Set(this.history.entries.map(e=>e.seq));
+    const anchor=!nearBottom && [...log.children].find(row=>wanted.has(Number(row.dataset.seq)) && row.offsetTop+row.offsetHeight>scroll);
+    const anchorOffset=anchor?scroll-anchor.offsetTop:0;
+    for(const [seq,row] of this.rows)if(!wanted.has(seq)){row.remove();this.rows.delete(seq);}
     let previous=null;
     for(const entry of this.history.entries){let row=this.rows.get(entry.seq);if(!row){row=document.createElement('article');row.className='chat-message';row.dataset.seq=String(entry.seq);const heading=document.createElement('div'),name=document.createElement('strong'),time=document.createElement('time'),body=document.createElement('p');time.dateTime=new Date(entry.time).toISOString();time.textContent=new Date(entry.time).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'});heading.append(name,time);body.textContent=entry.text;row.append(heading,body);this.rows.set(entry.seq,row);}row.dataset.mine=String(entry.author===this.self);const name=row.querySelector('strong'),label=entry.author===this.self?'You':entry.name;if(name.textContent!==label)name.textContent=label;const next=previous?previous.nextSibling:log.firstChild;if(next!==row)log.insertBefore(row,next);previous=row;}
-    if(nearBottom)log.scrollTop=log.scrollHeight;else log.scrollTop=scroll;
+    if(nearBottom || changedSession)log.scrollTop=log.scrollHeight;
+    else log.scrollTop=anchor?anchor.offsetTop+anchorOffset:scroll;
+    this.updateLatest();
     this.$('empty').hidden=!!this.history.entries.length;this.renderState();
   }
   snapshot(){return {epoch:this.history.epoch,cursor:this.history.cursor,tail:this.history.tail(),authors:[{id:'host',...this.authors.get('host')},...[...this.links.keys()].map(id=>({id,...this.authors.get(id)}))].map(({id,author,name})=>({id,author,name}))};}

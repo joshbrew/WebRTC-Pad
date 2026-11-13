@@ -9,7 +9,8 @@ files = [root / name for name in ('package.json','package-lock.json','README.md'
 extensions = {'.js','.cjs','.mjs','.json','.html','.css','.svg','.woff2','.py','.c','.cs','.swift','.plist','.md','.yml','.ps1','.go','.mod','.sum','.sh','.cmd','.command','.example'}
 for folder in ('system','windows','linux','mac','.github'):
     for file in (root/folder).rglob('*'):
-        if file.is_file() and '__pycache__' not in file.parts and (file.suffix in extensions or file.name == 'Caddyfile'):
+        theme_image = file.is_relative_to(root/'system/public/themes') and file.suffix in {'.png','.jpg','.jpeg','.webp','.avif'}
+        if file.is_file() and not file.is_symlink() and '__pycache__' not in file.parts and (file.suffix in extensions or theme_image or file.name == 'Caddyfile'):
             files.append(file)
 with ZipFile(output,'w',ZIP_DEFLATED) as archive:
     for file in sorted(set(files)):
@@ -21,6 +22,7 @@ with ZipFile(output) as archive:
     assert all(n in names for n in ('system/public/last-session.js','system/test/last-session.test.js','system/scripts/smoke-last-session.mjs'))
     assert all(n in names for n in ('system/public/source-picker.js','system/public/video-handover.js','system/public/video-health.js','system/src/source-thumbnail.js','system/native/windows-thumbnail.cs','system/test/source-thumbnail.test.js','system/test/video-health.test.js','system/scripts/smoke-native-handover.mjs'))
     assert all(n in names for n in launchers)
+    assert all(f'system/public/themes/{pack}/{name}' in names for pack in ('classic','signal','cobalt','light') for name in ('theme.json','theme.css','preview.webp'))
     for platform,extension in (('windows','.cmd'),('linux','.sh'),('mac','.command')):
         nested_launchers=[n for n in names if n.startswith(platform+'/') and n.count('/')==1 and n.endswith(extension)]
         assert not nested_launchers, 'Launchers belong at the root or inside platform shortcuts/'
