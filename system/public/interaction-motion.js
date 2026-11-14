@@ -17,10 +17,10 @@ export function initInteractionMotion(root=document){
     const owner=icon.closest(interactive);
     return !icon.parentElement.closest('svg') && (!owner || owner===control) && available(icon);
   });
-  function ripple(control,origin){
+  function ripple(control,origin,glyph){
     const {left,top,width,height}=origin.getBoundingClientRect();
     if(!width || !height)return;
-    ripples.get(control)?.cancel();
+    ripples.get(control)?.forEach(animation=>animation.cancel());
     const ring=document.createElement('span');
     ring.className='ui-press-ripple';
     ring.setAttribute('aria-hidden','true');
@@ -32,14 +32,39 @@ export function initInteractionMotion(root=document){
     const y=top+height/2-size/2-(dialog?bounds.top+dialog.clientTop-dialog.scrollTop:0);
     Object.assign(ring.style,{
       position:dialog?'absolute':'fixed',left:x+'px',top:y+'px',width:size+'px',height:size+'px',
-      margin:'0',zIndex:'1100',pointerEvents:'none',color:getComputedStyle(origin).color,
-      background:'radial-gradient(circle, transparent 34%, color-mix(in srgb,currentColor 50%,transparent) 52%, transparent 70%)',
+      margin:'0',zIndex:'1100',opacity:'0',pointerEvents:'none',color:getComputedStyle(origin).color,
+      background:'radial-gradient(circle, transparent 32%, color-mix(in srgb,currentColor 65%,transparent) 49%, color-mix(in srgb,currentColor 20%,transparent) 60%, transparent 73%)',
     });
     host.append(ring);
-    const effect=play(ring,[{opacity:.82,scale:'.72'},{opacity:0,scale:'2.35'}],{duration:360,easing:'cubic-bezier(.18,.64,.4,1)'},'ripple');
+    const effect=play(ring,[
+      {opacity:0,scale:'.55'},
+      {opacity:.86,scale:'1',offset:.18},
+      {opacity:0,scale:'2.65'}
+    ],{duration:440,easing:'cubic-bezier(.18,.64,.4,1)'},'ripple');
     if(!effect){ring.remove();return;}
-    ripples.set(control,effect);
-    const remove=()=>{ring.remove();if(ripples.get(control)===effect)ripples.delete(control);};
+    const effects=[effect];
+    if(glyph)for(const [index,direction] of [[0,1],[1,-1]]){
+      const drop=document.createElement('span');
+      drop.className='ui-press-drop';
+      drop.setAttribute('aria-hidden','true');
+      Object.assign(drop.style,{
+        position:ring.style.position,left:x+size/2+direction*size*.21-3+'px',top:y+size*.62-3+'px',
+        width:'6px',height:'6px',margin:'0',zIndex:'1100',opacity:'0',pointerEvents:'none',
+        color:ring.style.color,borderRadius:'50%',
+        background:'radial-gradient(circle at 36% 28%, currentColor 8%, color-mix(in srgb,currentColor 56%,transparent) 45%, transparent 74%)',
+      });
+      host.append(drop);
+      const fall=play(drop,[
+        {opacity:0,translate:'0px 0px',scale:'1.15 .65'},
+        {opacity:.85,translate:`${3*direction}px -3px`,scale:'1 1',offset:.22,easing:'ease-in'},
+        {opacity:.55,translate:`${8*direction}px 8px`,scale:'.76 1.28',offset:.62,easing:'ease-out'},
+        {opacity:0,translate:`${11*direction}px 17px`,scale:'.3 .52'},
+      ],{delay:35+index*30,duration:330},'ripple-drop');
+      if(fall){effects.push(fall);fall.finished.then(()=>drop.remove(),()=>drop.remove());}
+      else drop.remove();
+    }
+    ripples.set(control,effects);
+    const remove=()=>{ring.remove();if(ripples.get(control)===effects)ripples.delete(control);};
     effect.finished.then(remove,remove);
   }
   const click=event=>{
@@ -54,19 +79,25 @@ export function initInteractionMotion(root=document){
     const wide=control.matches('summary,.large,.full,.controller-select,.source-tile,.file-button');
     // Keep the hit target fixed. Only the glyph or label moves.
     const decorations=icons.length?icons:[...control.children].filter(child=>child.matches('span:not(.chat-unread),.source-preview') && !child.querySelector(interactive));
-    ripple(control,icons.find(icon=>icon.contains(event.target)) || icons[0] || control);
+    ripple(control,icons.find(icon=>icon.contains(event.target)) || icons[0] || control,icons.length>0);
     for(const decoration of decorations){
       channels.get(decoration)?.get('press')?.cancel();
       channels.get(decoration)?.get('attention')?.cancel();
       const base=getComputedStyle(decoration).scale;
       const resting=base==='none'?'1':base;
       const glyph=icons.includes(decoration);
-      play(decoration,[
+      const frames=glyph?[
+        {scale:resting,translate:'0px 0px',offset:0,easing:'ease-out'},
+        {scale:'1.16 .78',translate:'0px 2px',offset:.18,easing:'cubic-bezier(.2,.65,.3,1)'},
+        {scale:'.96 1.19',translate:'0px -3px',offset:.47,easing:'cubic-bezier(.2,.74,.35,1)'},
+        {scale:resting,translate:'0px 0px',offset:1},
+      ]:[
         {scale:resting,easing:'ease-out',offset:0},
-        {scale:glyph?'.94':wide?'.98':'.96',easing:'ease-in-out',offset:.18},
-        {scale:glyph?'1.14':wide?'1.025':'1.06',easing:'ease-out',offset:.48},
+        {scale:wide?'.98':'.96',easing:'ease-in-out',offset:.18},
+        {scale:wide?'1.025':'1.06',easing:'ease-out',offset:.48},
         {scale:resting,offset:1}
-      ],{duration:240,easing:'linear'});
+      ];
+      play(decoration,frames,{duration:glyph?300:240,easing:'linear'});
     }
   };
   function commit(control){

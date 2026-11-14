@@ -52,21 +52,29 @@ try{
   const plink=await cameraButton.evaluate(control=>{
     control.click();
     const icon=control.querySelector('svg'),ring=[...document.querySelectorAll('.ui-press-ripple')].at(-1);
-    const rebound=icon.getAnimations().find(animation=>animation.effect.getKeyframes().some(frame=>frame.scale==='1.14'));
-    const [start,end]=ring.getAnimations()[0].effect.getKeyframes();
+    const rebound=icon.getAnimations().find(animation=>animation.effect.getKeyframes().some(frame=>frame.translate==='0px -3px'));
+    const frames=ring.getAnimations()[0].effect.getKeyframes(),crest=frames[1],end=frames.at(-1);
+    const drops=[...document.querySelectorAll('.ui-press-drop')].slice(-2).map(drop=>{
+      const [fall]=drop.getAnimations(),poses=fall.effect.getKeyframes();
+      return {startsAtOrigin:poses[0].translate.split(' ').every(value=>parseFloat(value)===0),last:poses.at(-1).translate,opacity:Number(poses.at(-1).opacity),delay:fall.effect.getTiming().delay,events:getComputedStyle(drop).pointerEvents};
+    });
     const bounds=icon.getBoundingClientRect(),center=ring.getBoundingClientRect();
-    return {scales:rebound?.effect.getKeyframes().map(frame=>Number(frame.scale)),expands:Number(start.scale)<Number(end.scale),fades:Number(start.opacity)>Number(end.opacity),centered:Math.abs(center.x+center.width/2-bounds.x-bounds.width/2)<1 && Math.abs(center.y+center.height/2-bounds.y-bounds.height/2)<1,pointerEvents:getComputedStyle(ring).pointerEvents};
+    return {scales:rebound?.effect.getKeyframes().map(frame=>frame.scale),expands:Number(crest.scale)<Number(end.scale),fades:Number(crest.opacity)>Number(end.opacity),centered:Math.abs(center.x+center.width/2-bounds.x-bounds.width/2)<1 && Math.abs(center.y+center.height/2-bounds.y-bounds.height/2)<1,pointerEvents:getComputedStyle(ring).pointerEvents,drops};
   });
-  assert.deepEqual(plink.scales,[1,.94,1.14,1],'The icon compresses, rebounds once and returns to rest');
+  assert.deepEqual(plink.scales,['1','1.16 0.78','0.96 1.19','1'],'The icon squashes and stretches through a single rebound');
   assert.ok(plink.expands && plink.fades && plink.centered,'The ripple fades outward from the icon');
   assert.equal(plink.pointerEvents,'none');
+  assert.deepEqual(plink.drops,[
+    {startsAtOrigin:true,last:'11px 17px',opacity:0,delay:35,events:'none'},
+    {startsAtOrigin:true,last:'-11px 17px',opacity:0,delay:65,events:'none'}
+  ],'Two staggered droplets fall and fade without intercepting input');
   assert.equal(await page.locator('#clientCameraSheet').evaluate(el=>getComputedStyle(el).animationName),'pad-surface-in','Call panel gets a short entry fade');
   assert.equal(await page.locator('#clientCameraSheet').evaluate(el=>getComputedStyle(el).transform),'none','Panel entrance never moves the controls');
   const position=await page.evaluate(()=>({x:scrollX,y:scrollY}));await page.locator('#clientPrepareMic').click();assert.equal(await page.locator('#clientSettingsSheet').evaluate(el=>el.open),true);assert.deepEqual(await page.evaluate(()=>({x:scrollX,y:scrollY})),position,'Spring feedback never scrolls the page');await page.locator('#clientVoice [data-voice=volume]').focus();await page.keyboard.press('ArrowLeft');assert.ok(await page.locator('#clientVoice [data-voice=volume]').evaluate(el=>el.getAnimations().some(a=>a.effect.getKeyframes().some(k=>k.boxShadow))),'Slider commits receive a brief confirmation');
   await page.evaluate(()=>{const control=document.querySelector('#clientPrepareMic');control.click();control.click();control.click();});
   assert.equal(await page.locator('#clientPrepareMic').evaluate(el=>el.getAnimations().filter(a=>a.effect.getKeyframes().some(k=>k.scale)).length),0,'Interactive hit area never scales');assert.equal(await page.locator('#clientPrepareMic > .icon').evaluate(el=>el.getAnimations().filter(a=>a.effect.getKeyframes().some(k=>k.scale)).length),1,'Rapid activation replaces the decoration rebound');
   await page.emulateMedia({reducedMotion:'reduce'});await page.waitForFunction(()=>!document.querySelector('#clientPrepareMic > .icon').getAnimations().some(a=>a.effect.getKeyframes().some(k=>k.scale)));
-  await page.waitForFunction(()=>!document.querySelector('.ui-press-ripple'));
+  await page.waitForFunction(()=>!document.querySelector('.ui-press-ripple,.ui-press-drop'));
   const count=await page.evaluate(()=>window.motionActivations.length);await page.locator('#clientPrepareCamera').click();assert.equal(await page.evaluate(()=>window.motionActivations.length),count,'Reduced motion disables JS rebounds and cancels running ones');
   assert.equal(await page.locator('#clientPrepareCamera').evaluate(el=>getComputedStyle(el).scale),'1');
   await page.locator('#modeHost').click();await page.locator('#hostAllowGuestMic').uncheck();assert.equal(await page.locator('#hostAllowGuestMic').evaluate(el=>getComputedStyle(el,'::before').animationName),'none','Switch thumbs respect reduced motion');const reducedEffects=await page.evaluate(()=>window.motionEffects.length);await page.locator('#showHelp').click();await page.locator('#tourTopics > summary').click();await page.locator('#tourScenario').focus();await page.keyboard.press('ArrowDown');await page.keyboard.press('Tab');assert.equal(await page.evaluate(()=>window.motionEffects.length),reducedEffects,'Guide and selection effects also honor reduced motion');await page.keyboard.press('Escape');
