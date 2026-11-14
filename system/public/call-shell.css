@@ -161,6 +161,7 @@
 .screen-quality-scopes {display:flex;flex-wrap:wrap;gap:6px;padding-bottom:10px;border-bottom:1px solid var(--border-default)}
 .screen-quality-scopes .button {border-radius:999px;min-width:34px}
 .screen-quality-scopes .button[aria-pressed=true] {background:var(--surface-accent);color:var(--text-on-accent);border-color:transparent}
+.screen-quality-scopes .has-quality-override::after {content:"";display:inline-block;width:6px;height:6px;margin-inline-start:5px;border-radius:50%;background:currentColor;}
 .host-quality-source {display:flex;align-items:center;justify-content:space-between;gap:8px}
 .host-quality-source h4 {overflow-wrap:anywhere;margin:0}
 .host-quality-source .button {flex-shrink:0}
@@ -671,6 +672,27 @@ html:fullscreen .view-popout > header { position:absolute; z-index:1; inset:0 0 
 .settings-connection > .button {margin-top:12px}
 .call-hint {position:fixed;z-index:1000;max-width:min(300px,calc(100vw - 16px));padding:7px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-raised);color:var(--ink);box-shadow:0 4px 16px #0004;font:11px/1.5 var(--font-sans);text-align:center;pointer-events:none}
 .call-hint[hidden] {display:none}
+.screen-quick-controls {position:fixed;inset:auto;margin:0;z-index:1100;box-sizing:border-box;width:min(252px,calc(100vw - 16px));max-height:calc(100dvh - 16px);overflow:auto;padding:10px;border:1px solid var(--line-strong);border-radius:var(--radius-md);background:var(--surface-card);color:var(--ink);box-shadow:var(--shadow-pop);font:13px/1.4 system-ui;}
+.screen-quick-controls[hidden] {display:none;}
+.screen-quick-controls {overscroll-behavior:contain;}
+.screen-quick-controls > header {display:flex;align-items:center;justify-content:space-between;gap:8px;padding:0 0 7px;border:0;background:none;}
+.screen-quick-controls > header > div {min-width:0;}
+.screen-quick-controls > header strong {display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.screen-quick-controls :is(.screen-quick-scope,.screen-quick-picture,.screen-quick-quality) {margin:0;color:var(--ink-2);font-size:11px;}
+.screen-quick-controls .screen-quick-picture {margin-bottom:8px;padding:5px 7px;border:1px solid var(--line);border-radius:var(--radius-sm);font-variant-numeric:tabular-nums;}
+.screen-quick-controls .screen-quick-quality {margin-bottom:5px;color:var(--ink);}
+.screen-quick-controls .screen-quick-picture[hidden] {display:none;}
+.screen-quick-controls > header button {border:0;border-radius:6px;background:var(--surface-raised);color:var(--ink);width:28px;height:28px;padding:0;font-size:18px;cursor:pointer;flex:none;}
+.screen-quick-fields {display:grid;gap:7px;}
+.screen-quick-fields > label {display:flex;justify-content:space-between;align-items:center;gap:7px;font:inherit;color:var(--ink);}
+.screen-quick-fields > label[hidden] {display:none;}
+.screen-quick-fields select {width:auto;max-width:126px;min-width:0;padding:5px 6px;border:1px solid var(--line-strong);border-radius:var(--radius-sm);background:var(--surface-raised);color:var(--ink);font:inherit;}
+.screen-quick-fields > button {justify-content:flex-start;min-height:30px;padding:4px 8px;font-size:12px;}
+.screen-quick-controls :focus-visible {outline:2px solid var(--accent-text);outline-offset:2px;}
+.single-screen-quick {position:absolute;z-index:9;top:10px;right:10px;}
+.video-stage:not(.has-video) > .single-screen-quick,#clientStage:is(.tiled-views,.switching-view) > .single-screen-quick {display:none;}
+@media (hover:hover) and (pointer:fine) {.video-stage:not(:hover,:focus-within) > .single-screen-quick:not([aria-expanded=true]) {opacity:0;}}
+.view-popout header .tile-quality-button {display:grid;place-items:center;min-height:25px;padding:4px 6px;}
 /* Paired device controls use familiar dropdown chevrons. */
 .call-shell .call-toolbar .mic-settings-button,.call-shell .call-toolbar .camera-settings-button {min-width:25px;width:25px;padding:8px 5px;margin-left:-8px;border-radius:0 10px 10px 0;border-left:0}
 .call-shell .call-toolbar :is([id$=CallMic],[id$=CallCamera]) {border-radius:10px 0 0 10px}

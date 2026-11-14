@@ -5,7 +5,7 @@ root = Path(__file__).resolve().parents[2]
 output = root / 'releases' / 'WebRTC-Pad.zip'
 output.parent.mkdir(exist_ok=True)
 launchers = ('Start-Windows.cmd','Start-Linux.sh','Start-Mac.command')
-files = [root / name for name in ('package.json','package-lock.json','README.md','.env.example','.gitignore','.gitattributes',*launchers)]
+files = [root / name for name in ('package.json','package-lock.json','README.md','LICENSE','.env.example','.gitignore','.gitattributes',*launchers)]
 extensions = {'.js','.cjs','.mjs','.json','.html','.css','.svg','.woff2','.py','.c','.cs','.swift','.plist','.md','.yml','.ps1','.go','.mod','.sum','.sh','.cmd','.command','.example'}
 for folder in ('system','windows','linux','mac','.github'):
     for file in (root/folder).rglob('*'):
@@ -32,7 +32,7 @@ with ZipFile(output) as archive:
     assert all(n in names for n in ('system/public/controller-platform.js','system/scripts/build-macos-hid.mjs','system/test/controller-platform.test.js','system/test/gamepad-helper.test.js','system/test/linux_gamepad_test.py'))
     assert all((archive.getinfo(n).external_attr >> 16) & 0o111 for n in names if n.endswith(('.sh','.command')))
     assert '.env' not in names and not any(n.startswith(('.local/','node_modules/')) for n in names)
-    assert all(n in names for n in ('system/public/media-controls.js','system/public/tile-adjustments.js','system/test/tile-adjustments.test.js','system/public/screen-room.js','system/public/screen-quality.js','system/public/screen-layout.js','system/test/screen.test.js','system/scripts/smoke-guest-screens.mjs','system/scripts/layout-gallery.mjs'))
+    assert all(n in names for n in ('system/public/media-controls.js','system/public/tile-adjustments.js','system/test/tile-adjustments.test.js','system/public/screen-room.js','system/public/screen-quality.js','system/public/screen-layout.js','system/public/screen-quick-controls.js','system/test/screen.test.js','system/scripts/smoke-guest-screens.mjs','system/scripts/layout-gallery.mjs'))
     assert all(n in names for n in ('system/src/server.js','system/public/index.html','system/native/cursor-overlay.py','system/config/coturn.compose.yml','system/scripts/run.mjs','windows/shortcuts/01-Host.cmd','linux/shortcuts/02-Join.sh','mac/shortcuts/02-Join.command'))
     assert all(n in names for n in ('windows/shortcuts/99-Uninstall.cmd','system/scripts/uninstall.ps1','system/scripts/interception-uninstall.ps1','system/scripts/hidhide-updater.ps1','system/scripts/guest-setup-cache.mjs','system/scripts/input-driver-prompt.mjs','system/src/input-driver-choice.js','system/docs/uninstall.md'))
     assert all(n in names for n in ('system/native/macos/Desktop.swift','system/native/macos/Info.plist','system/scripts/build-macos.mjs','system/public/mac-desktop.html'))

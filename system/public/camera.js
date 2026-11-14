@@ -79,9 +79,10 @@ export class CameraRoom{
   member(id){return this.roster.find(m=>m.id===id);}
   announce(){if(!this.ready)return;const member={id:this.self,session:this.session,camera:this.canShare() && !!this.stream,watch:this.$('watch').checked,hidden:[...this.localHidden]};if(this.host){this.members.set('host',{...member,id:'host'});this.broadcast();}else this.sendControl?.({type:'camera',action:'join',...member});this.render();}
   policy(id){return {allowGuestVideo:this.memberAllowed(id),sessionLimit:this.sessionLimit,cameraLimit:boundedCamera(this.sessionLimit,this.memberLimits.get(id))};}
-  addControl(id,send){this.controls.set(id,send);send({type:'camera',action:'hello',self:id,members:this.roster,...this.policy(id)});}
+  rosterFor(id){return this.roster;}
+  addControl(id,send){this.controls.set(id,send);send({type:'camera',action:'hello',self:id,members:this.rosterFor(id),...this.policy(id)});}
   removeControl(id){this.controls.delete(id);if(this.members.delete(id))this.broadcast();this.closePeer(id);}
-  broadcast(){this.roster=[...this.members.values()].map(m=>({...m,camera:m.camera && this.memberAllowed(m.id),cameraAllowed:this.memberAllowed(m.id)}));for(const [id,send] of this.controls)send({type:'camera',action:'members',self:id,members:this.roster,...this.policy(id)});this.reconcile();this.render();}
+  broadcast(){this.roster=[...this.members.values()].map(m=>({...m,camera:m.camera && this.memberAllowed(m.id),cameraAllowed:this.memberAllowed(m.id)}));for(const [id,send] of this.controls)send({type:'camera',action:'members',self:id,members:this.rosterFor(id),...this.policy(id)});this.reconcile();this.render();}
   receive(from,msg){
     if(!this.ready || msg?.type!=='camera')return;
     if(this.host){if(!this.controls.has(from))return;if(msg.action==='join' && typeof msg.session==='string' && msg.session.length<=64){this.members.set(from,{id:from,session:msg.session,camera:this.memberAllowed(from) && msg.camera===true,watch:msg.watch!==false,hidden:hiddenCameras(msg.hidden)});this.broadcast();return;}this.route(from,msg);return;}

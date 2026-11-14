@@ -212,6 +212,7 @@ export function createApp({ createInjector = options=>injection.createInjector({
     files['/app-inputs']='app-inputs.html';
     files['/host-shares.js']='host-shares.js';
     files['/capture-region.js']='capture-region.js';files['/view-popouts.js']='view-popouts.js';
+    files['/screen-quick-controls.js']='screen-quick-controls.js';
     files['/view-window.html']='view-window.html';files['/view-window.js']='view-window.js';
     files['/guest-tiles.js']='guest-tiles.js';
     files['/call-settings.js']='call-settings.js';files['/call-comfort.js']='call-comfort.js';files['/call-shell.js']='call-shell.js';files['/call-shell.css']='call-shell.css';files['/source-picker.js']='source-picker.js';

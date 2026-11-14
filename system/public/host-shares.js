@@ -1,6 +1,7 @@
 import {sourcePicker} from './source-picker.js';
 import {browserSourceLabel} from './last-session.js';
 import {screenSoundButton,syncScreenSound} from './guest-tiles.js';
+import {videoContentHint} from './media.js';
 const element=(tag,text,className)=>{const node=document.createElement(tag);if(text)node.textContent=text;if(className)node.className=className;return node;};
 
 // Extra views are captured only by explicit host actions. Native encoding starts
@@ -51,7 +52,7 @@ export class HostShares {
       const q=this.quality(),stream=await navigator.mediaDevices.getDisplayMedia({video:{frameRate:{ideal:q.frameRate || 60,max:q.frameRate || 60}},audio:true,systemAudio:'include',windowAudio:'window'});
       if(generation!==this.generation){stream.getTracks().forEach(track=>track.stop());return;}
       const track=stream.getVideoTracks()[0];if(!track){stream.getTracks().forEach(track=>track.stop());return;}
-      track.contentHint='motion';const id=crypto.randomUUID();
+      track.contentHint=videoContentHint(this.quality());const id=crypto.randomUUID();
       const settings=track.getSettings(),name=browserSourceLabel(track.label,settings.displaySurface);
       const source={id,kind:'browser',label:name==='Browser share'?`Screen ${this.sources.size+2}`:name,stream,settings,appliedFrameRate:q.frameRate};
       this.sources.set(id,source);

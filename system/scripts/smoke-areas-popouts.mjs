@@ -6,8 +6,8 @@ import {pathToFileURL} from 'node:url';
 import fs from 'node:fs/promises';
 import {createApp} from '../src/server.js';
 const {chromium}=await import(pathToFileURL(process.env.PLAYWRIGHT_MODULE).href);
-const writes=[],errors=[];let browser;
-const app=createApp({env:{},createInjector:async()=>({name:'Text/views fixture',addController(){},removeController(){},setState(slot,state){writes.push({slot,state});},close(){}})});
+const controllerWrites=[],errors=[];let browser;
+const app=createApp({env:{},createInjector:async()=>({name:'Text/views fixture',addController(){},removeController(){},setState(slot,state){controllerWrites.push({slot,state});},close(){}})});
 try{
   app.server.listen(0,'127.0.0.1');await once(app.server,'listening');
   browser=await launchTestBrowser(chromium,{...(process.env.BROWSER_CHANNEL==='chromium'?{}:{channel:process.env.BROWSER_CHANNEL || 'msedge'}),headless:true,args:['--disable-background-timer-throttling','--disable-renderer-backgrounding']});
@@ -20,6 +20,7 @@ try{
     const send=RTCDataChannel.prototype.send;
     window.viewReports={};
     RTCDataChannel.prototype.send=function(value){
+      if(typeof value==='string' && value.includes('"view-quality-request"'))window.viewQualityChannel=this;
       if(typeof value==='string' && value.includes('"view-metrics"')){
         const report=JSON.parse(value);
         window.viewReports[report.sourceId]={channel:this,report};
@@ -32,6 +33,14 @@ try{
       send.call(channel,JSON.stringify({...report,metrics:{loss:.2,bufferMs:300}}));
     };
     window.captureCount=0;window.captureStreams=[];
+    const setParameters=RTCRtpSender.prototype.setParameters;
+    RTCRtpSender.prototype.setParameters=function(parameters){
+      if(window.screenQualityWrites && this.track?.kind==='video'){
+        const source=window.captureStreams.findIndex(stream=>stream.getVideoTracks().includes(this.track));
+        window.screenQualityWrites.push({source,fps:parameters.encodings?.[0]?.maxFramerate});
+      }
+      return setParameters.call(this,parameters);
+    };
     navigator.mediaDevices.getDisplayMedia=async options=>{
       const n=window.captureCount++,canvas=document.createElement('canvas');canvas.width=n?640:1280;canvas.height=n?480:720;
       const ctx=canvas.getContext('2d');let frame=0;setInterval(()=>{ctx.fillStyle=`hsl(${frame++%360} 80% 30%)`;ctx.fillRect(0,0,canvas.width,canvas.height);ctx.fillStyle='#fff';ctx.font='40px sans-serif';ctx.fillText(`View ${n+1} frame ${frame}`,20,60);},16);
@@ -87,6 +96,88 @@ try{
     await individual.getByRole('button',{name:'Exit fullscreen',exact:true}).click();
     await individual.waitForFunction(()=>!document.fullscreenElement);
     assert.equal(await individualVideo.evaluate(video=>video.srcObject.id),individualStream);
+    await popouts[1].locator('video').click({button:'right'});
+    const quick=popouts[1].getByRole('dialog',{name:'Screen quick controls'});
+    assert.equal(await quick.locator('.screen-quick-scope').textContent(),'Only your playback');
+    assert.match(await quick.locator('.screen-quick-picture').textContent(),/640 × 480/);
+    assert.equal(await quick.locator('.screen-quick-quality').textContent(),'Using your default quality');
+    assert.equal(await quick.getByRole('button',{name:'Use my default quality'}).isDisabled(),true);
+    await host.locator('#streamMinimumResolution').evaluate(el=>{el.value='360';el.dispatchEvent(new Event('change',{bubbles:true}));});
+    await one.waitForFunction(()=>document.querySelector('#clientHostLimit').textContent.includes('min 360p'));
+    await quick.getByLabel('Minimum resolution').selectOption('480');
+    await one.waitForFunction(()=>document.querySelector('#clientHostLimit').textContent.includes('min 480p'));
+    assert.equal(await quick.locator('.screen-quick-quality').textContent(),'Custom playback quality');
+    await quick.getByLabel('Resolution limit').selectOption('360');
+    assert.equal(await quick.getByLabel('Minimum resolution').inputValue(),'0','A floor above the cap falls back to the host minimum');
+    await quick.getByLabel('Frame rate limit').selectOption('30');
+    await quick.getByLabel('Adaptive quality').uncheck();
+    assert.equal(await quick.getByLabel('Minimum resolution').isVisible(),false);
+    await popouts[1].waitForFunction(()=>document.querySelector('video').videoHeight===360);
+    await popouts[1].waitForFunction(()=>document.querySelector('.screen-quick-picture').textContent.includes('480 × 360'));
+    assert.equal(await two.locator('#clientVideo').evaluate(video=>video.videoHeight),720,'A guest request affects only that screen and viewer');
+    await quick.getByRole('button',{name:'Use my default quality'}).click();
+    assert.equal(await quick.locator('.screen-quick-quality').textContent(),'Using your default quality');
+    await one.waitForFunction(()=>document.querySelector('#clientHostLimit').textContent.includes('min 360p'));
+    await host.locator('#streamMinimumResolution').evaluate(el=>{el.value='480';el.dispatchEvent(new Event('change',{bubbles:true}));});
+    await popouts[1].waitForFunction(()=>document.querySelector('video').videoHeight===480);
+    const videoTrack=await popouts[1].locator('video').evaluate(video=>video.srcObject.getVideoTracks()[0].id);
+    await host.evaluate(()=>{window.screenQualityWrites=[];});
+    await one.evaluate(sourceId=>{
+      for(const frameRate of [15,30,60])window.viewQualityChannel.send(JSON.stringify({
+        type:'view-quality-request',sourceId,quality:{frameRate,automatic:false}
+      }));
+    },extra);
+    await one.waitForFunction(()=>document.querySelector('#clientHostLimit').textContent.includes('Fixed quality'));
+    await host.waitForFunction(()=>window.screenQualityWrites.some(write=>write.source===1 && write.fps===60));
+    const writes=await host.evaluate(()=>{const writes=window.screenQualityWrites;window.screenQualityWrites=null;return writes;});
+    assert.equal(writes.some(write=>write.source===1 && [15,30].includes(write.fps)),false,'Intermediate quick settings never reach the video sender');
+    assert.equal(await popouts[1].locator('video').evaluate(video=>video.srcObject.getVideoTracks()[0].id),videoTrack,'The pop-out keeps its video track');
+    await one.evaluate(sourceId=>window.viewQualityChannel.send(JSON.stringify({type:'view-quality-request',sourceId,quality:null})),extra);
+    await one.waitForFunction(()=>document.querySelector('#clientHostLimit').textContent.includes('Adaptive'));
+    await popouts[1].keyboard.press('Escape');
+    await quick.waitFor({state:'hidden'});
+    const quickButton=popouts[1].getByRole('button',{name:'Screen quick controls'});
+    await quickButton.click();
+    await quick.waitFor({state:'visible'});
+    assert.equal(await quickButton.getAttribute('aria-expanded'),'true');
+    await quickButton.click();
+    assert.equal(await quickButton.getAttribute('aria-expanded'),'false');
+    await popouts[1].getByRole('button',{name:'Fullscreen',exact:true}).click();
+    await popouts[1].getByRole('button',{name:'Exit fullscreen',exact:true}).waitFor();
+    await popouts[1].locator('video').focus();
+    await popouts[1].keyboard.press('Shift+F10');
+    assert.equal(await quick.evaluate(el=>document.fullscreenElement?.contains(el)),true);
+    await popouts[1].setViewportSize({width:320,height:400});
+    await popouts[1].waitForFunction(()=>{const r=document.querySelector('.screen-quick-controls').getBoundingClientRect();return r.left>=0 && r.top>=0 && r.right<=innerWidth && r.bottom<=innerHeight;});
+    await popouts[1].keyboard.press('Escape');
+    assert.equal(await popouts[1].locator('video').evaluate(el=>el===document.activeElement),true);
+    await popouts[1].evaluate(()=>{if(document.fullscreenElement)return document.exitFullscreen();});
+    await host.bringToFront();
+    await host.locator('#hostTileControls [data-layout=grid]').click();
+    const hostExtra=host.locator(`#hostTileGrid .view-tile[data-source-id="host-${extra}"]`);
+    await hostExtra.click({button:'right'});
+    const hostQuick=host.getByRole('dialog',{name:'Screen quick controls'});
+    assert.equal(await hostQuick.locator('.screen-quick-scope').textContent(),'Everyone watching this share');
+    assert.equal(await hostQuick.locator('.screen-quick-quality').textContent(),'Using global quality');
+    await host.evaluate(()=>{window.screenQualityWrites=[];});
+    await hostQuick.getByLabel('Frame rate limit').selectOption('30');
+    await host.waitForFunction(()=>window.screenQualityWrites.some(write=>write.source===1 && write.fps===30));
+    assert.equal(await host.evaluate(()=>window.screenQualityWrites.some(write=>write.source===0)),false,'Changing a secondary share leaves main-screen senders untouched');
+    await hostQuick.getByRole('button',{name:'Use global quality'}).click();
+    await host.waitForFunction(()=>window.screenQualityWrites.some(write=>write.source===1 && write.fps===60));
+    assert.equal(await host.evaluate(()=>window.screenQualityWrites.some(write=>write.source===0)),false,'Resetting a secondary share leaves main-screen senders untouched');
+    await host.evaluate(()=>{window.screenQualityWrites=null;});
+    await hostQuick.getByLabel('Adaptive quality').uncheck();
+    assert.equal(await hostQuick.getByLabel('Minimum resolution').isVisible(),false);
+    await hostQuick.getByLabel('Adaptive quality').check();
+    await hostQuick.getByLabel('Minimum resolution').selectOption('360');
+    assert.equal(await hostQuick.locator('.screen-quick-quality').textContent(),'Custom screen quality');
+    assert.equal(await host.locator('#hostScreenOverrides .has-quality-override').getAttribute('data-source-id'),extra);
+    await hostQuick.getByRole('button',{name:'Share sound',exact:true}).click();
+    await hostQuick.getByRole('button',{name:'Stop sharing sound',exact:true}).click();
+    await hostQuick.getByRole('button',{name:'Use global quality'}).click();
+    assert.equal(await host.locator('#hostScreenOverrides .has-quality-override').count(),0);
+    await host.keyboard.press('Escape');
     const before=await Promise.all(popouts.map(frameCount));await one.waitForTimeout(400);for(let i=0;i<2;i++)assert.ok(await frameCount(popouts[i])>before[i],'Both pop-outs advance independently');
     assert.equal(await one.locator('#clientSharedView').inputValue(),extra,'Opening windows does not change the main guest view');
     await popouts[0].close();const frames=await frameCount(popouts[1]);await one.waitForTimeout(1000);assert.ok(await frameCount(popouts[1])>frames,'Closing one pop-out keeps the other playing');
@@ -246,7 +337,10 @@ try{
     await single.waitForFunction(id=>{const shown=[...document.querySelectorAll('.floating-screen:not([hidden])')];return shown.length===1 && shown[0].dataset.sourceId===id && shown[0].querySelector('video').videoWidth>0;},extra);
     assert.equal(await single.getByRole('button',{name:'Single view'}).getAttribute('aria-pressed'),'true');
     await single.close();
-    await one.evaluate(()=>window.pad.buttons[0]={pressed:true,value:1});await one.waitForTimeout(200);assert.ok(writes.some(w=>w.state.buttons.a));await one.evaluate(()=>window.pad.buttons[0]={pressed:false,value:0});
+    const beforeInput=controllerWrites.length;
+    await one.evaluate(()=>window.pad.buttons[0]={pressed:true,value:1});
+    await one.waitForTimeout(200);assert.ok(controllerWrites.slice(beforeInput).some(w=>w.state.buttons.a));
+    await one.evaluate(()=>window.pad.buttons[0]={pressed:false,value:0});
     if(!await host.locator('#hostSettingsSheet').evaluate(el=>el.open))await host.locator('#hostCallSettings').click();
     await host.locator('#hostLiveSource').evaluate(el=>el.open=true);
     await host.locator('#chooseCaptureArea').click();const canvas=host.locator('#captureAreaDialog canvas'),bounds=await canvas.boundingBox();
@@ -279,6 +373,10 @@ try{
   assert.equal(await host.getByRole('button',{name:/^Screen 2,/}).evaluate(el=>el===document.activeElement && el.getAttribute('aria-pressed')==='true'),true);
   await host.locator('#hostSettingsSheet .help-button').click();
   await host.locator('#hostSmallPreview').click();
+  const previewQuick=host.locator('#hostStage').getByRole('button',{name:'Screen quick controls'});
+  await previewQuick.click();
+  await host.getByRole('dialog',{name:'Screen quick controls'}).waitFor({state:'visible'});
+  await host.keyboard.press('Escape');
   await host.locator('#hostPreviewCallSettings').click();
   assert.equal(await host.locator('#hostAutoThrottle').isVisible(),true);
   await host.locator('#hostSettingsSheet .help-button').click();
@@ -308,17 +406,28 @@ try{
   assert.equal(await one.locator('#clientVideo').evaluate((video,previous)=>video.srcObject.getVideoTracks()[0]===previous,picture),true,'Toggling sound preserves the video track');
   await two.locator('#clientTileControls [data-layout=single]').click();
   await one.evaluate(()=>{window.pad.buttons[0]={pressed:true,value:1};});await one.waitForFunction(()=>document.querySelector('#clientSlot').textContent==='P1');
-  await one.waitForTimeout(200);assert.ok(writes.some(w=>w.state.buttons.a),'Controller input stays connected while switching pictures');
+  await one.waitForTimeout(200);assert.ok(controllerWrites.some(w=>w.state.buttons.a),'Controller input stays connected while switching pictures');
   await one.evaluate(()=>{window.pad.buttons[0]={pressed:false,value:0};});
   await one.locator('#clientSharedView').evaluate((select,value)=>{select.value=value;select.dispatchEvent(new Event('change'));},'');await one.waitForFunction(()=>Math.abs(document.querySelector('#clientVideo').videoWidth/document.querySelector('#clientVideo').videoHeight-16/9)<.02);
   for(const source of [extra,'',extra,''])await one.locator('#clientSharedView').evaluate((select,value)=>{select.value=value;select.dispatchEvent(new Event('change'));},source);
   await one.waitForFunction(()=>document.querySelector('#clientSharedView').value==='' && Math.abs(document.querySelector('#clientVideo').videoWidth/document.querySelector('#clientVideo').videoHeight-16/9)<.02);
   await one.locator('#clientSharedView').evaluate((select,value)=>{select.value=value;select.dispatchEvent(new Event('change'));},extra);await one.waitForFunction(()=>Math.abs(document.querySelector('#clientVideo').videoWidth/document.querySelector('#clientVideo').videoHeight-4/3)<.02);
+  const guestQuick=one.getByRole('dialog',{name:'Screen quick controls'});
+  await one.locator('#clientStage > .single-screen-quick').click();
+  await guestQuick.waitFor();
+  await one.locator('#clientSharedView').evaluate(select=>{select.value='';select.dispatchEvent(new Event('change'));});
+  await guestQuick.waitFor({state:'hidden'});
+  await one.waitForFunction(()=>document.querySelector('#clientSharedView').value==='' && !document.querySelector('#clientStage').classList.contains('switching-view'));
+  await one.locator('#clientSharedView').evaluate((select,value)=>{select.value=value;select.dispatchEvent(new Event('change'));},extra);
+  await one.waitForFunction(()=>document.querySelector('#clientSharedView').value!=='' && !document.querySelector('#clientStage').classList.contains('switching-view'));
   await testAreasAndPopouts();
+  await one.locator('#clientStage > .single-screen-quick').click();
+  await guestQuick.waitFor();
   if(!await host.locator('#hostSettingsSheet').evaluate(el=>el.open))await host.locator('#hostCallSettings').click();
   await host.locator('#hostLiveSource').evaluate(el=>el.open=true);
   await host.locator('#hostExtraShares').evaluate(el=>el.open=true);
   await host.locator('#hostExtraShares button[aria-label^="Remove shared view"]').click();await one.waitForFunction(()=>document.querySelector('#clientSharedView').options.length===1 && document.querySelector('#clientStage .single-view-picker').hidden && Math.abs(document.querySelector('#clientVideo').videoWidth/document.querySelector('#clientVideo').videoHeight-16/9)<.02);
+  await guestQuick.waitFor({state:'hidden'});
   assert.equal(await host.evaluate(()=>window.captureStreams[1].getTracks().every(t=>t.readyState==='ended')),true);
   await host.locator('#hostInviteSheet').evaluate(el=>el.open=false);
   for(const width of [390,824,860,1366])for(const page of [host,one]){
@@ -329,5 +438,5 @@ try{
   }
   await host.setViewportSize({width:1366,height:950});await fs.mkdir('.local/screenshots',{recursive:true});await host.screenshot({path:'.local/screenshots/pairing-next-actions.png'});
   assert.deepEqual(errors,[]);
-    console.log('PASS: independent screen audio and local mute; stable video while toggling sound; secondary-screen adaptation and fixed cap; tile maximization and screen picker; multi-screen pop-out with inherited orientation, independent layout controls and fullscreen; cropped views; text pairing; controller continuity; source removal and mobile bounds.');
+    console.log('PASS: independent screen audio and local mute; stable video while toggling sound; isolated secondary quality edits, adaptation and fixed cap; tile maximization and screen picker; multi-screen pop-out with inherited orientation, independent layout controls and fullscreen; cropped views; text pairing; controller continuity; source removal and mobile bounds.');
 }catch(error){console.log('Browser errors:',errors);for(const page of (browser?.contexts()[0]?.pages() || []))console.log(await page.evaluate(()=>({host:document.querySelector('#hostStatus')?.textContent,client:document.querySelector('#clientStatus')?.textContent,w:document.querySelector('#clientVideo')?.videoWidth,frames:document.querySelector('#clientVideo')?.getVideoPlaybackQuality().totalVideoFrames})).catch(()=>null));throw error;}finally{await browser?.close();await app.close();}

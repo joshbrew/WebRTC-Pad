@@ -6,6 +6,7 @@ import {prepareVideoHandover} from './video-handover.js';
 import {voiceDescription} from './voice-quality.js';
 import {screenSoundButton,syncScreenSound,viewLayoutButton,viewLayoutLabels} from './guest-tiles.js';
 import {readPreference,writePreference} from './call-comfort.js';
+import {bindScreenQuickControls,screenQuickButton} from './screen-quick-controls.js';
 
 const post=(p,msg)=>{if(p.control?.readyState==='open')p.control.send(JSON.stringify(msg));};
 
@@ -109,8 +110,11 @@ export class HostViewPopouts {
       this.sendOffer(entry,result.sdp,result.ice);
     }catch(error){entry.awaitingFrame=false;throw error;}
   }
-  async refreshQuality(p){
-    await Promise.all([...this.entries].filter(([,entry])=>!p || entry.p===p).map(([key,entry])=>this.updateQuality(key,entry)));
+  async refreshQuality(p,sourceId,resetAdaptation=sourceId!==undefined){
+    await Promise.all([...this.entries].filter(([,entry])=>(!p || entry.p===p) && (sourceId===undefined || sourceId===entry.sourceId)).map(([key,entry])=>{
+      if(resetAdaptation)entry.adaptation=undefined;
+      return this.updateQuality(key,entry);
+    }));
   }
   syncAudio(entry,sourceId=entry.sourceId){
     const sender=entry.senders?.audio;if(!sender)return;
@@ -140,8 +144,8 @@ export class HostViewPopouts {
 }
 
 export class GuestViewPopouts {
-  constructor({send,status,soundChanged,toggleSound,selectedSoundBlocked}){
-    Object.assign(this,{send,status,soundChanged,toggleSound,selectedSoundBlocked});this.entries=new Map();this.sources=new Map();this.mutes=new Map();this.soundButtons=new Map();this.selected='';
+  constructor({send,status,soundChanged,toggleSound,selectedSoundBlocked,quickSettings}){
+    Object.assign(this,{send,status,soundChanged,toggleSound,selectedSoundBlocked,quickSettings});this.entries=new Map();this.sources=new Map();this.mutes=new Map();this.soundButtons=new Map();this.selected='';
     window.addEventListener('message',event=>{
       if(event.origin!==location.origin || event.data?.type!=='view-window-ready')return;
       const found=[...this.entries].find(([,entry])=>entry.window===event.source);if(!found)return;
@@ -150,6 +154,11 @@ export class GuestViewPopouts {
       entry.popupSink={video:d.querySelector('video'),note:d.querySelector('[role=status]')};
       entry.popupSink.video.setAttribute('aria-label',d.title);
       this.addSink(sourceId,entry,entry.popupSink);
+      if(this.quickSettings){
+        const button=screenQuickButton(d);
+        d.querySelector('#viewFullscreen').before(button);
+        bindScreenQuickControls(entry.popupSink.video,()=>this.quickSettings(this.sources.get(sourceId)),{button});
+      }
       entry.removeSound=this.bindSoundButton(sourceId,d.querySelector('#viewFullscreen'));
       const win=entry.window;win.addEventListener('pagehide',()=>{if(entry.window===win)this.closeWindow(sourceId);});
     });
@@ -157,7 +166,12 @@ export class GuestViewPopouts {
   update(sources,selected){
     this.sources=new Map(sources.filter(source=>typeof source?.id==='string' && source.id.length<=80 && typeof source.label==='string').slice(0,33).map(source=>[source.id,source]));
     this.selected=selected || '';
-    for(const [id,entry] of this.entries)if(this.sources.has(id))this.syncAudio(id,entry);else this.close(id);
+    for(const [id,entry] of this.entries)if(this.sources.has(id)){
+      this.syncAudio(id,entry);
+      this.subscribe(id,entry);
+      const doc=entry.ready && !entry.window?.closed && entry.window?.document;
+      if(doc)doc.dispatchEvent(new doc.defaultView.Event('screen-quick-refresh'));
+    }else this.close(id);
     for(const id of this.mutes.keys())if(id && !this.sources.has(id))this.mutes.delete(id);
   }
   entry(id){let e=this.entries.get(id);if(!e){e={requestId:crypto.randomUUID(),sinks:new Set(),noteText:'Connecting…'};this.entries.set(id,e);}return e;}
@@ -200,11 +214,24 @@ export class GuestViewPopouts {
   updateSink(e,sink){
     sink.note.textContent=e.noteText || '';
     sink.note.hidden=!e.noteText;
-    sink.video.srcObject=e.stream || null;
+    if(!e.noteText)delete sink.video.dataset.reconnecting;
+    if(sink.video.srcObject!==(e.stream || null))sink.video.srcObject=e.stream || null;
     if(e.stream)sink.video.play().catch(()=>{});
   }
-  addSink(id,e,sink){e.sinks.add(sink);sink.video.muted=true;sink.video.playsInline=true;this.updateSink(e,sink);if(!e.subscribed){e.subscribed=true;this.send({type:'view-open',sourceId:id,requestId:e.requestId,liveQuality:true});}}
-  attach(id,video,note){const e=this.entry(id),sink={video,note};this.addSink(id,e,sink);return ()=>{e.sinks.delete(sink);video.srcObject=null;if(!e.sinks.size && !e.window)this.close(id);};}
+  subscribe(id,entry){
+    if(entry.subscribed || !entry.sinks.size || !this.sources.has(id))return;
+    entry.subscribed=true;
+    this.send({type:'view-open',sourceId:id,requestId:entry.requestId,liveQuality:true});
+  }
+  addSink(id,e,sink){e.sinks.add(sink);sink.video.muted=true;sink.video.playsInline=true;this.updateSink(e,sink);this.subscribe(id,e);}
+  attach(id,video,note,{keepOnReconnect=false}={}){
+    const e=this.entry(id),sink={video,note,keepOnReconnect};this.addSink(id,e,sink);
+    return ()=>{
+      if(!e.sinks.delete(sink))return;
+      video.srcObject=null;
+      if(!e.sinks.size && !e.window && this.entries.get(id)===e)this.close(id);
+    };
+  }
   paint(e,text){e.noteText=text;for(const sink of e.sinks)this.updateSink(e,sink);}
   open(sourceId){
     const old=this.entries.get(sourceId);if(old?.window && !old.window.closed){old.window.focus();return;}
@@ -219,14 +246,14 @@ export class GuestViewPopouts {
   async handle(msg){
     if(!['view-offer','view-error'].includes(msg?.type))return false;
     const entry=this.entries.get(msg.sourceId);if(!entry || msg.requestId && msg.requestId!==entry.requestId)return true;
-    if(msg.type==='view-error'){entry.cancelWarmup?.();entry.pending?.close();entry.pc?.close();entry.pending=null;entry.pc=null;entry.stream=null;entry.audioTrack=null;this.syncAudio(msg.sourceId,entry);this.paint(entry,String(msg.error || 'This view stopped.').slice(0,180));return true;}
+    if(msg.type==='view-error'){entry.cancelWarmup?.();entry.pending?.close();entry.pc?.close();entry.retired?.close();entry.pending=null;entry.pc=null;entry.retired=null;entry.recovering=false;entry.stream=null;entry.audioTrack=null;this.syncAudio(msg.sourceId,entry);this.paint(entry,String(msg.error || 'This view stopped.').slice(0,180));return true;}
     entry.cancelWarmup?.();entry.pending?.close();
     const pc=new RTCPeerConnection(sanitizeIceConfig(msg.ice));entry.pending=pc;
     const active=()=>this.entries.get(msg.sourceId)===entry && entry.pending===pc;
     const fail=()=>{
       if(!active())return;
       entry.cancelWarmup?.();entry.pending=null;pc.close();
-      if(!entry.stream)this.paint(entry,'Could not connect this view. Close it and try again.');
+      if(entry.recovering || !entry.stream)this.paint(entry,'Could not connect this view. Close it and try again.');
     };
     let nextAudio;
     pc.ontrack=event=>{
@@ -242,11 +269,13 @@ export class GuestViewPopouts {
         const previous=entry.pc;
         entry.pending=null;entry.pc=pc;entry.stream=new MediaStream([event.track]);entry.token=msg.token;entry.sample=null;
         entry.audioTrack=nextAudio;this.syncAudio(msg.sourceId,entry);
+        entry.recovering=false;
         this.paint(entry,null);
         previous?.close();
+        entry.retired?.close();entry.retired=null;
         if(msg.native)this.send({type:'view-presented',sourceId:msg.sourceId,token:msg.token});
       };
-      if(msg.native)entry.cancelWarmup=prepareVideoHandover(event.track,{active,ready:show,failed:fail});
+      if(msg.native || entry.recovering)entry.cancelWarmup=prepareVideoHandover(event.track,{active,ready:show,failed:fail});
       else show();
     };
     pc.onconnectionstatechange=()=>{
@@ -275,14 +304,39 @@ export class GuestViewPopouts {
     }));}finally{this.reporting=false;}
   }
   closeWindow(id){const e=this.entries.get(id);if(!e?.window)return;const win=e.window;e.window=null;e.ready=false;e.removeSound?.();if(e.popupSink){e.sinks.delete(e.popupSink);e.popupSink.video.srcObject=null;e.popupSink=null;}if(!win.closed)win.close();if(!e.sinks.size)this.close(id);if(![...this.entries.values()].some(e=>e.window)){clearInterval(this.timer);this.timer=null;}}
-  close(id){const e=this.entries.get(id);if(!e)return;this.entries.delete(id);e.removeSound?.();e.cancelWarmup?.();e.pending?.close();e.pc?.close();if(e.audio){e.audio.pause();e.audio.srcObject=null;e.audio.remove();}for(const sink of e.sinks)sink.video.srcObject=null;e.sinks.clear();if(e.subscribed)this.send({type:'view-close',sourceId:id,requestId:e.requestId});if(e.window && !e.window.closed)e.window.close();if(![...this.entries.values()].some(e=>e.window)){clearInterval(this.timer);this.timer=null;}}
-  clear(){for(const id of [...this.entries.keys()])this.close(id);this.sources.clear();this.mutes.clear();this.selected='';}
+  close(id){const e=this.entries.get(id);if(!e)return;this.entries.delete(id);e.removeSound?.();e.cancelWarmup?.();e.pending?.close();e.pc?.close();e.retired?.close();if(e.audio){e.audio.pause();e.audio.srcObject=null;e.audio.remove();}for(const sink of e.sinks)sink.video.srcObject=null;e.sinks.clear();if(e.subscribed)this.send({type:'view-close',sourceId:id,requestId:e.requestId});if(e.window && !e.window.closed)e.window.close();if(![...this.entries.values()].some(e=>e.window)){clearInterval(this.timer);this.timer=null;}}
+  reconnectWindow(id,entry){
+    entry.cancelWarmup?.();entry.cancelWarmup=null;
+    entry.pending?.close();entry.pending=null;
+    if(entry.pc){
+      entry.retired?.close();entry.retired=entry.pc;entry.pc=null;
+    }
+    // Retain the displayed stream until the replacement decodes a frame.
+    entry.subscribed=false;
+    entry.recovering=true;
+    entry.requestId=crypto.randomUUID();
+    entry.audioTrack=null;entry.sample=null;
+    this.syncAudio(id,entry);
+    this.paint(entry,'Reconnecting this screen…');
+    const doc=entry.ready && entry.window?.document;
+    if(doc)doc.dispatchEvent(new doc.defaultView.Event('screen-quick-close'));
+  }
+  clear({recovering=false}={}){
+    this.sources.clear();
+    for(const [id,entry] of this.entries){
+      if(recovering && (entry.window && !entry.window.closed || [...entry.sinks].some(sink=>sink.keepOnReconnect)))this.reconnectWindow(id,entry);
+      else this.close(id);
+    }
+    if(!recovering)this.mutes.clear();
+    this.selected='';
+    this.refreshSoundControls();
+  }
 }
 
 // Keep all views in a regular popup so the whole layout can enter fullscreen.
 export class FloatingScreens {
-  constructor({attach,notify,changed,sound,focusChanged,side='client'}){
-    Object.assign(this,{attach,notify,changed,sound,focusChanged});this.entries=new Map();this.revision=0;
+  constructor({attach,notify,changed,sound,focusChanged,side='client',quickSettings}){
+    Object.assign(this,{attach,notify,changed,sound,focusChanged,quickSettings});this.entries=new Map();this.revision=0;
     this.available=new Map();
     this.preferenceKey=side==='host'?'hostPopoutLayout':'guestPopoutLayout';
     window.addEventListener('message',event=>{
@@ -418,6 +472,10 @@ export class FloatingScreens {
     Object.assign(entry,{video,note,zoom,label,close});
     this.updateTitle(entry,entry.title ?? source.label);
     entry.removeSound=this.sound?.(source,close);
+    if(this.quickSettings){
+      const button=screenQuickButton(d);close.before(button);
+      bindScreenQuickControls(card,()=>this.quickSettings(this.available.get(source.id)),{button});
+    }
   }
   updateTitle(entry,label){
     entry.title=label;
@@ -489,6 +547,7 @@ export class FloatingScreens {
     if(!this.entries.size)this.clear();else{this.render();this.changed?.();}
   }
   updateSources(sources){
+    if(this.recovering)return;
     this.available=new Map(sources.map(source=>[source.id,source]));
     let labelsChanged=false;
     for(const [id,entry] of this.entries){
@@ -498,8 +557,23 @@ export class FloatingScreens {
     }
     if(labelsChanged)this.render();
     else this.updateAddScreen();
+    const doc=this.win?.document;
+    if(doc)doc.dispatchEvent(new doc.defaultView.Event('screen-quick-refresh'));
   }
+  beginReconnect(sharedSources){
+    if(!this.active || this.recovering)return;
+    this.recovering=true;
+    const doc=this.win?.document;
+    if(doc)doc.dispatchEvent(new doc.defaultView.Event('screen-quick-close'));
+    for(const [id,entry] of this.entries){
+      if(!sharedSources.has(id)){this.close(id);continue;}
+      if(entry.note){entry.note.textContent='Reconnecting this screen…';entry.note.hidden=false;}
+      if(entry.video)entry.video.dataset.reconnecting='true';
+    }
+  }
+  finishReconnect(){this.recovering=false;}
   clear(closeWindow=true){
+    this.recovering=false;
     if(!this.entries.size && !this.win && !this.opening && !this.popup)return;
     this.revision++;
     const win=this.win || this.popup;
@@ -515,17 +589,18 @@ export class FloatingScreens {
 
 export function mirrorVideo(video,note,stream){
   video.srcObject=stream || null;
-  const ready=()=>{note.hidden=true;};
+  const ready=()=>{note.hidden=true;delete video.dataset.reconnecting;};
   video.addEventListener('loadeddata',ready,{once:true});
   if(stream)video.play().catch(()=>{});
-  return ()=>{video.removeEventListener('loadeddata',ready);video.srcObject=null;};
+  return (keepPicture=false)=>{video.removeEventListener('loadeddata',ready);if(!keepPicture)video.srcObject=null;};
 }
 
 export function mirrorPlayer(source,video,note){
   let detach,stream;
   const sync=()=>{
     if(source.srcObject===stream)return;
-    detach?.();stream=source.srcObject;note.hidden=false;
+    if(video.dataset.reconnecting==='true' && stream && source.readyState<2)return;
+    detach?.(true);stream=source.srcObject;note.hidden=false;
     detach=mirrorVideo(video,note,stream);
   };
   const events=['loadeddata','emptied','resize'];

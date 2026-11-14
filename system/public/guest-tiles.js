@@ -27,8 +27,8 @@ export function syncScreenSound(button,source){
   button.setAttribute('aria-pressed',String(!source.muted && !source.soundBlocked));
 }
 export class GuestTiles {
-  constructor({stage,video,views,subscriptions,selectView,changed,side='client',mediaControls,allowDoubleClick=()=>true,openFloating,sourcesChanged}){
-    Object.assign(this,{stage,video,views,subscriptions,selectView,changed,side,mediaControls,allowDoubleClick,openFloating,sourcesChanged});this.mode='single';this.preferenceKey=side==='host'?'hostViewLayout':'viewLayout';this.preferred=readPreference(this.preferenceKey,'single');this.sources=[];this.screenSources=[];this.liveScreens=[];this.cameras=[];this.primary='';this.featured='';this.localSingle='';this.tiles=new Map();
+  constructor({stage,video,views,subscriptions,selectView,changed,side='client',mediaControls,allowDoubleClick=()=>true,openFloating,sourcesChanged,quickControls}){
+    Object.assign(this,{stage,video,views,subscriptions,selectView,changed,side,mediaControls,allowDoubleClick,openFloating,sourcesChanged,quickControls});this.mode='single';this.preferenceKey=side==='host'?'hostViewLayout':'viewLayout';this.preferred=readPreference(this.preferenceKey,'single');this.sources=[];this.screenSources=[];this.liveScreens=[];this.cameras=[];this.primary='';this.featured='';this.localSingle='';this.tiles=new Map();
     this.maximized = null;
     this.root=node('div');this.root.hidden=true;this.root.className='tile-grid';this.root.id=`${side}TileGrid`;this.strip=node('div');this.strip.className='tile-strip';this.cameraStrip=node('div');this.cameraStrip.className='tile-camera-strip';this.root.append(this.strip,this.cameraStrip);stage.append(this.root);
     const controls=node('div');controls.className='tile-layout-controls';controls.id=`${side}TileControls`;controls.setAttribute('role','toolbar');controls.setAttribute('aria-label','View layout');this.buttons=new Map();
@@ -118,10 +118,11 @@ export class GuestTiles {
     const video=source.id===this.primary?this.video:node('video');video.autoplay=true;if(video!==this.video)video.muted=true;video.playsInline=true;video.setAttribute('aria-label',source.label);
     const note=node('span','Connecting…');note.className='tile-status';note.setAttribute('role','status');
     const title=node('div');title.className='tile-heading';title.append(button);tile.append(video,title,note);
+    let settings;
     if(typeof source.qualityId==='string'){
-      const settings=node('button');settings.type='button';settings.className='tile-quality-button';
+      settings=node('button');settings.type='button';settings.className='tile-quality-button';
       settings.setAttribute('aria-label',`Stream quality for ${source.label}`);
-      settings.title='Stream quality';
+      settings.title=this.quickControls?'Screen quick controls':'Stream quality';
       settings.innerHTML='<svg class="icon" aria-hidden="true"><use href="#i-settings"/></svg>';
       settings.onclick=()=>document.dispatchEvent(new CustomEvent('screen-quality-settings',{detail:{side:this.side,sourceId:source.qualityId,trigger:settings}}));
       title.append(settings);
@@ -133,6 +134,15 @@ export class GuestTiles {
     }
     const tileControl = 'button, select, input, a, .streamer-camera, [role=separator]';
     if (!this.isCamera(source) && !source.placeholder) {
+      if(this.quickControls){
+        const quick=settings || node('button');quick.type='button';quick.className='tile-quality-button';
+        if(!settings){
+          quick.setAttribute('aria-label',`Screen quick controls for ${source.label}`);quick.title='Screen quick controls';
+          quick.innerHTML='<svg class="icon" aria-hidden="true"><use href="#i-settings"/></svg>';
+          title.append(quick);
+        }
+        this.quickControls(tile,()=>this.sources.find(item=>item.id===source.id),quick);
+      }
       if(this.openFloating){
         const floating=node('button');
         floating.type='button';floating.className='button small-button tile-floating';

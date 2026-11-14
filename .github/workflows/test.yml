@@ -1,0 +1,133 @@
+name: Validate
+on: [push, pull_request]
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
+      - run: python -B system/test/guest_posix_test.py
+      - run: python -B system/test/linux_desktop_test.py
+      - run: python -B system/test/wayland_portal_test.py
+      - run: python -B system/test/relative_input_test.py
+      - if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb pulseaudio pulseaudio-utils libpulse0 libx11-6 libxext6 libxtst6
+          PAD_TEST_X11=1 PAD_TEST_AUDIO=1 XDG_SESSION_TYPE=x11 WAYLAND_DISPLAY= xvfb-run -a python3 -B system/test/linux_desktop_test.py
+      - if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y python3-gi dbus-daemon
+          dbus-run-session -- env PAD_TEST_PORTAL=1 PAD_PRIVATE_PORTAL=1 /usr/bin/python3 -B system/test/wayland_portal_test.py
+      - if: runner.os != 'Windows'
+        run: node system/scripts/setup-guest-input.mjs
+      - run: npm install --no-save --package-lock=false playwright
+      - run: npx playwright install chromium
+      - if: runner.os == 'Linux'
+        run: npx playwright install-deps chromium
+      - run: node system/scripts/smoke-native-guest.mjs
+        env:
+          PLAYWRIGHT_MODULE: node_modules/playwright/index.mjs
+          BROWSER_CHANNEL: chromium
+      - run: node system/scripts/smoke-quick-start-input.mjs
+        env:
+          PLAYWRIGHT_MODULE: node_modules/playwright/index.mjs
+          BROWSER_CHANNEL: chromium
+      - run: node system/scripts/smoke-platform-desktop.mjs
+        env:
+          PLAYWRIGHT_MODULE: node_modules/playwright/index.mjs
+          BROWSER_CHANNEL: chromium
+      - run: node system/scripts/smoke-handoff.mjs
+        env:
+          PLAYWRIGHT_MODULE: node_modules/playwright/index.mjs
+          BROWSER_CHANNEL: chromium
+      - run: node system/scripts/smoke-mapping.mjs
+        env:
+          PLAYWRIGHT_MODULE: node_modules/playwright/index.mjs
+          BROWSER_CHANNEL: chromium
+      - run: node system/scripts/smoke-call-shell.mjs
+        env:
+          PLAYWRIGHT_MODULE: node_modules/playwright/index.mjs
+          BROWSER_CHANNEL: chromium
+      - run: node system/scripts/smoke-qol.mjs
+        env:
+          PLAYWRIGHT_MODULE: node_modules/playwright/index.mjs
+          BROWSER_CHANNEL: chromium
+          QOL_SOAK_SECONDS: 15
+      - run: node system/scripts/smoke-relative-mouse.mjs
+        env:
+          PLAYWRIGHT_MODULE: node_modules/playwright/index.mjs
+          BROWSER_CHANNEL: chromium
+      - run: node system/scripts/smoke-participants.mjs
+        env:
+          PLAYWRIGHT_MODULE: node_modules/playwright/index.mjs
+          BROWSER_CHANNEL: chromium
+      - run: node system/scripts/smoke-guest-screens.mjs
+        env:
+          PLAYWRIGHT_MODULE: node_modules/playwright/index.mjs
+          BROWSER_CHANNEL: chromium
+      - run: node system/scripts/smoke-ui-showcase.mjs
+        env:
+          PLAYWRIGHT_MODULE: node_modules/playwright/index.mjs
+          BROWSER_CHANNEL: chromium
+      - run: node system/scripts/smoke-areas-popouts.mjs
+        env:
+          PLAYWRIGHT_MODULE: node_modules/playwright/index.mjs
+          BROWSER_CHANNEL: chromium
+      - if: runner.os == 'Linux'
+        run: node system/scripts/smoke-fallback.mjs
+        env:
+          PLAYWRIGHT_MODULE: node_modules/playwright/index.mjs
+          BROWSER_CHANNEL: chromium
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: system/native/media/go.mod
+          cache-dependency-path: system/native/media/go.sum
+      - run: go test ./...
+        working-directory: system/native/media
+      - run: node system/scripts/smoke-install.mjs
+      - run: node system/scripts/smoke-config.mjs
+      - run: python -m py_compile system/native/desktop-input.py
+      - run: python -m py_compile system/native/cursor-overlay.py
+      - if: runner.os != 'Windows'
+        run: for script in Start-Linux.sh Start-Mac.command linux/shortcuts/*.sh mac/shortcuts/*.command system/scripts/*.sh; do sh -n "$script"; done
+      - if: runner.os == 'macOS'
+        run: npm run driver:macos:build
+      - if: runner.os == 'macOS'
+        run: node system/scripts/build-macos.mjs
+      - if: runner.os == 'Linux'
+        run: python3 -m py_compile system/native/linux-gamepad.py
+  firefox:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npm install --no-save --package-lock=false playwright
+      - run: npx playwright install --with-deps firefox
+      - run: node system/scripts/smoke-qol.mjs
+        env:
+          PLAYWRIGHT_MODULE: node_modules/playwright/index.mjs
+          BROWSER_ENGINE: firefox
+      - run: node system/scripts/smoke-participants.mjs
+        env:
+          PLAYWRIGHT_MODULE: node_modules/playwright/index.mjs
+          BROWSER_ENGINE: firefox
+      - run: node system/scripts/smoke-guest-screens.mjs
+        env:
+          PLAYWRIGHT_MODULE: node_modules/playwright/index.mjs
+          BROWSER_ENGINE: firefox

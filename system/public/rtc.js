@@ -1,5 +1,3 @@
-import {videoContentHint} from './media.js';
-
 // A browser may support either the standard millisecond target or Chromium's
 // older seconds hint. Each is optional and must never interrupt track setup.
 export function preferLowLatency(receiver) {
@@ -70,10 +68,7 @@ export async function replaceCapture(peer, stream) {
       if(stream){if(kind==='audio')sender.setStreams();else sender.setStreams(stream);}
       await sender.replaceTrack(track);
     }
-    if (track?.kind === 'video') {
-      track.contentHint = videoContentHint(peer.quality);
-      await applySenderQuality(peer);
-    }
+    if (track?.kind === 'video') await applySenderQuality(peer);
     if(track?.kind==='audio')await prioritizeAudio(sender);
   }
   peer.outboundStream=stream;

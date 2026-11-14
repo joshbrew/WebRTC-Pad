@@ -19,6 +19,13 @@ try{
   for(let n=0;n<100 && !events.some(e=>e.event==='relative');n++)await guest.waitForTimeout(20);assert.ok(events.some(e=>e.event==='relative' && e.dx===12 && e.dy===-9));
   const count=events.length;await guest.evaluate(()=>{const packet=window.desktopPackets.find(p=>p.type==='desktop-relative');window.desktopChannel.send(JSON.stringify({...packet,seq:packet.seq+1,dx:9999}));window.desktopChannel.send(JSON.stringify({...packet,seq:packet.seq+2,desktopToken:'wrong-token'}));window.desktopChannel.send(JSON.stringify(packet));});await guest.waitForTimeout(120);assert.equal(events.length,count,'Oversize, wrong permission token and replayed packets must not reach the OS adapter');
   await guest.keyboard.press('Escape');await guest.waitForFunction(()=>!document.pointerLockElement);assert.ok(states.some(s=>s.buttons.length===0 && s.keys.length===0));
+  await guest.keyboard.press('Escape');
+  const beforeClick=states.length;
+  await guest.locator('#clientStage').click({button:'right'});
+  for(let n=0;n<100 && !states.slice(beforeClick).some(state=>state.buttons.includes(2));n++)await guest.waitForTimeout(20);
+  assert.ok(states.slice(beforeClick).some(state=>state.buttons.includes(2)));
+  assert.equal(await guest.getByRole('dialog',{name:'Screen quick controls'}).isVisible(),false,'A remote right-click stays with the desktop input');
+  await guest.locator('#clientCallControllers').click();
   await guest.locator('#clientRelativeMouse').click();await guest.waitForFunction(()=>!!document.pointerLockElement);await host.evaluate(()=>document.querySelector('#hostStopDesktop').click());await guest.waitForFunction(()=>!document.pointerLockElement && document.querySelector('#clientRelativeMouse').disabled);assert.deepEqual(errors,[]);
   console.log('PASS: opt-in pointer lock, relative deltas, release on Escape/revocation, no desktop permission escalation, and backend rejection of replayed, oversized or wrong-token movement. Input was recorded, never sent to the desktop.');
 }finally{await browser?.close();await app.close();}

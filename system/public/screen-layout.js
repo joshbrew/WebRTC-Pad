@@ -4,8 +4,9 @@ import {preferLowLatency} from './rtc.js';
 import {screenLimit} from './screen-quality.js';
 import {readPreference,writePreference} from './call-comfort.js';
 import {FloatingScreens,mirrorPlayer,mirrorVideo} from './view-popouts.js';
+import {bindScreenQuickControls} from './screen-quick-controls.js';
 export class ScreenLayouts{
-  constructor({hostScreens,clientScreens,hostCamera,clientCamera,guestTiles,hostSources,mediaControls,nativeCommand,quality,hostShareList,removeShare,cursors,notify}){
+  constructor({hostScreens,clientScreens,hostCamera,clientCamera,guestTiles,hostSources,mediaControls,nativeCommand,quality,hostShareList,removeShare,cursors,notify,quickSettings}){
     Object.assign(this,{hostScreens,clientScreens,hostCamera,clientCamera,guestTiles,hostSources,nativeCommand,quality,hostShareList,removeShare,cursors});this.queued=false;this.nativeViews=new Map();this.nativeQueues=new Map();
     this.root=document.createElement('section');this.root.id='hostScreenWatch';this.root.hidden=true;this.root.className='host-screen-watch';
     this.root.innerHTML='<div class="host-watch-heading"><h3>In the call</h3><button class="button small-button" data-watch-fullscreen><svg class="icon" aria-hidden="true"><use href="#i-expand"/></svg> Fullscreen</button></div><div id="hostSharedViews" class="guest-view-selector"><label for="hostSharedView">View</label><select id="hostSharedView"></select></div><div id="hostWatchStage" class="video-stage host-watch-stage" tabindex="0"><video muted playsinline autoplay></video></div>';
@@ -17,14 +18,14 @@ export class ScreenLayouts{
     this.previewOptions=document.querySelector('.call-preview-options');this.optionsHome=document.createComment('Local preview options');this.previewOptions.before(this.optionsHome);
     this.previewButton=document.querySelector('#hostMonitorToggle');this.previewHome=document.createComment('Local preview control');this.previewButton.before(this.previewHome);
     this.streamerButton=document.createElement('button');this.streamerButton.type='button';this.streamerButton.className='button small-button';this.streamerButton.textContent='Streamer view';this.streamerButton.title='Put cameras in movable corner overlays';this.previewButton.before(this.streamerButton);this.streamerButton.onclick=()=>{this.compact=false;this.tiles.setLayout('streamer');this.schedule();};
-    this.floating=new FloatingScreens({notify,side:'host',attach:(source,video,note)=>{
+    this.floating=new FloatingScreens({notify,side:'host',quickSettings,attach:(source,video,note)=>{
       if(source.id==='host-main')return mirrorPlayer(document.querySelector('#hostPreview'),video,note);
       if(source.stream)return mirrorVideo(video,note,source.stream);
       const existing=this.tiles.tiles.get(source.id)?.video;
       if(existing)return mirrorPlayer(existing,video,note);
       return this.attachNative(source.id,video,note);
     },changed:()=>{this.floatButton.textContent=this.floating.entries.size?'Close pop-out':'Pop out';}});
-    this.tiles=new GuestTiles({stage,video,views,side:'host',mediaControls,subscriptions:{attach:(id,video,note)=>this.attachNative(id,video,note)},selectView:()=>{},openFloating:source=>this.floating.open(source).catch(()=>notify('Could not open the pop-out window.'))});
+    this.tiles=new GuestTiles({stage,video,views,side:'host',mediaControls,subscriptions:{attach:(id,video,note)=>this.attachNative(id,video,note)},selectView:()=>{},openFloating:source=>this.floating.open(source).catch(()=>notify('Could not open the pop-out window.')),quickControls:(tile,source,button)=>bindScreenQuickControls(tile,()=>quickSettings(source()),{button})});
     const float=document.createElement('button');float.type='button';float.className='button small-button';float.textContent='Pop out';
     this.floatButton=float;this.root.querySelector('.host-watch-heading').append(float);
     float.onclick=()=>{
@@ -92,6 +93,7 @@ export class ScreenLayouts{
     if(!expanded){if(active)this.renderRoster(this.compactRoster);if(this.previewOptions.parentElement!==this.optionsHome.parentElement)this.optionsHome.after(this.previewOptions);this.cursors?.mount(document.querySelector('#hostStage'),()=>document.querySelector('#hostPreview'));const peek=this.root.querySelector('.chat-peek');if(peek)document.querySelector('#hostStage').append(peek);this.tiles.clear();if(this.previewButton.parentElement!==this.previewHome.parentElement)this.previewHome.after(this.previewButton);return;}
     const optionsParent=document.fullscreenElement===this.root.querySelector('.host-watch-stage')?document.fullscreenElement:heading;if(this.previewOptions.parentElement!==optionsParent)optionsParent.append(this.previewOptions);if(this.previewButton.parentElement!==heading)heading.append(this.previewButton);this.previewButton.textContent=document.querySelector('#hostPreviewToggle').checked?'Hide my screen':'Show my screen';
     this.tiles.setScreens(sources);this.tiles.setCameras(cameras);
+    document.dispatchEvent(new Event('screen-quick-refresh'));
     if(!this.tiles.active && this.tiles.sources.length){this.tiles.localSingle=this.tiles.featured || this.tiles.sources[0].id;this.tiles.render();}
     this.cursors?.mount(this.root.querySelector('.host-watch-stage'),()=>this.tiles.tiles.get('host-main')?.video || document.querySelector('#hostPreview'));
     this.empty.hidden=!!(sources.length || cameras.length);if(!this.empty.hidden)this.renderRoster(this.empty);

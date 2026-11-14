@@ -39,6 +39,7 @@ import { streamSettings, captureConstraints, applyCaptureSettings, qualityLabel,
 import { isPlayerSlot, playerSlots } from './players.js';
 import { receivedVideoStats, videoStatsLabel } from './stats.js';
 import { clientQuality, effectiveQuality, adaptQuality, adaptationMetrics, nativeEncodingKey, screenQuality, secondaryResolution } from './quality.js';
+import {bindScreenQuickControls,quickMinimum,quickSelect,screenQuickButton} from './screen-quick-controls.js';
 import { desktopCodes, desktopSnapshot, videoPoint } from './desktop.js';
 import { cursorLayer, cursorColor } from './cursors.js';
 import { gatherIce, pairingPacket, parsePairing, downloadPairing, sanitizeIceConfig, connectionFailure, filePairingBrowserHint } from './pairing.js';
@@ -82,7 +83,7 @@ filePriorities();
 const filePermissions=document.createElement('details');filePermissions.className='advanced';filePermissions.innerHTML='<summary>Chat files &amp; clipboard</summary><label class="check-row"><input id="hostAllowFiles" type="checkbox" checked /> File transfers · recipients choose what to receive</label><label class="check-row"><input id="hostAllowClipboard" type="checkbox" /> Clipboard text sharing · send and copy manually</label>';
 $('#hostMediaPermissions').append(filePermissions);
 for(const id of ['hostAllowFiles','hostAllowClipboard'])$(`#${id}`).onchange=()=>hostChat.files.setPolicy({files:$('#hostAllowFiles').checked,clipboard:$('#hostAllowClipboard').checked});
-const chatting=()=>!!document.querySelector('dialog[open]') || !!document.activeElement?.closest('.chat-card');
+const chatting=()=>!!document.querySelector('dialog[open],.screen-quick-controls:not([hidden])') || !!document.activeElement?.closest('.chat-card');
 const voiceSend=ch=>message=>{if(ch.readyState==='open' && ch.bufferedAmount<65536)ch.send(JSON.stringify(message));};
 const hostDiagnostics=new Diagnostics($('#hostDiagnostics'),{source:'My preview'});
 const clientDiagnostics=new Diagnostics($('#clientDiagnostics'));
@@ -567,6 +568,29 @@ const screenOverrides=new Map();
 function hostScreenQuality(id){
   return screenQuality(captureQuality,'',screenOverrides.get(id || ''));
 }
+function hostQuickSettings(source){
+  if(!source)return;
+  if(typeof source.qualityId!=='string')return meshQuickSettings(hostScreens,source);
+  const id=source.qualityId,quality=hostScreenQuality(id),share=id && hostShares.get(id);
+  if(id && !share)return;
+  const identity=share || (nativeCapture?selectedSource:(captureStream?._areaSource || captureStream)?.getVideoTracks()[0]);
+  if(!identity || !id && audioOnly())return;
+  const customized=screenOverrides.has(id);
+  return {sourceId:source.id ?? id,identity,label:source.label,scope:hostRoom?'Everyone watching this share':'Private preview',
+    quality:customized?'Custom screen quality':'Using global quality',sound:share?hostShares.audioControl(share):primarySoundControl(),fields:[
+    quickSelect('resolution','Resolution limit',screenFields.resolution,quality.resolution),
+    quickSelect('frameRate','Frame rate limit',screenFields.frameRate,quality.frameRate),
+    {key:'autoThrottle',label:'Adaptive quality',value:quality.autoThrottle!==false},
+    quickMinimum(screenFields.minHeight,quality.minHeight,quality.height,quality.autoThrottle===false),
+  ],change:(key,value)=>{
+    const next={...quality,[key]:['frameRate','minHeight'].includes(key)?Number(value):value};
+    next.minHeight=Math.min(next.minHeight || 480,Number(next.resolution) || Infinity);
+    screenOverrides.set(id,next);
+    changeStreamQuality();
+  },reset:{label:'Use global quality',disabled:!customized,run:()=>{if(screenOverrides.delete(id))changeStreamQuality();}},more:trigger=>{
+    document.dispatchEvent(new CustomEvent('screen-quality-settings',{detail:{side:'host',sourceId:id,trigger}}));
+  }};
+}
 function boundMinimumResolution(select,ceiling){
   for(const option of select.options)option.disabled=Number(option.value)>ceiling;
   if(select.selectedOptions[0]?.disabled){select.value=[...select.options].filter(option=>!option.disabled).at(-1)?.value || '0';if(select.id==='clientMinimumResolution')writePreference(select.id,select.value);}
@@ -601,6 +625,10 @@ function streamInfo(actual) {
   $('#hostStreamInfo').textContent = actual?.width ? `Source: ${actual.width} × ${actual.height} at ${Math.round(actual.frameRate || 0)} fps.` : '';
 }
 let qualityQueue = Promise.resolve(),qualityRevision=0,appliedCaptureQuality=hostScreenQuality('');
+function screenQualityKey(quality){
+  return JSON.stringify([quality.resolution,quality.frameRate,quality.priority,quality.minHeight || 480,quality.autoThrottle!==false,quality.codec || 'h264',quality.encoderPreset]);
+}
+const appliedScreenQuality=new Map([['',appliedCaptureQuality]]),pendingScreenQuality=new Set();
 function changeStreamQuality() {
   const revision=++qualityRevision;
   boundMinimumResolution($('#streamMinimumResolution'),Number($('#streamResolution').value) || Infinity);
@@ -608,12 +636,17 @@ function changeStreamQuality() {
   // Publish the policy immediately, even if capture or preview is busy.
   captureQuality = requested;
   renderScreenQualityFields();
+  document.dispatchEvent(new Event('screen-quick-refresh'));
   try { localStorage.setItem('webrtc-pad:stream-quality', JSON.stringify(requested)); } catch { /* Session settings still apply. */ }
-  qualityQueue = qualityQueue.then(async () => {
+  qualityQueue = qualityQueue.catch(()=>{}).then(async () => {
     if(revision!==qualityRevision)return;
+    const settings=new Map(['',...hostShares.sources.keys()].map(id=>[id,hostScreenQuality(id)]));
+    const changed=new Set([...settings].filter(([id,quality])=>pendingScreenQuality.has(id) || screenQualityKey(quality)!==screenQualityKey(appliedScreenQuality.get(id) || {})).map(([id])=>id));
+    if(!changed.size)return;
+    for(const id of changed)pendingScreenQuality.add(id);
     const previous=appliedCaptureQuality;
-    const main=hostScreenQuality('');
-    const track=(captureStream?._areaSource || captureStream)?.getVideoTracks()[0];
+    const main=settings.get('');
+    const track=changed.has('')?(captureStream?._areaSource || captureStream)?.getVideoTracks()[0]:null;
     let actual=track?.getSettings(),captureError;
     const captureChanged=['resolution','frameRate'].some(field=>previous[field]!==main[field]);
     if(track && captureChanged){
@@ -622,24 +655,36 @@ function changeStreamQuality() {
         if(captureStream?._areaSource && previous.frameRate!==main.frameRate && revision===qualityRevision)await startCapture(true,{allowPicker:false});
       }catch(error){captureError=error;}
     }
+    if(track && (captureStream?._areaSource || captureStream)?.getVideoTracks()[0]===track){
+      for(const video of new Set([track,captureStream.getVideoTracks()[0]]))video.contentHint=videoContentHint(main);
+      if(!captureError)appliedCaptureQuality=main;
+    }
     if(revision!==qualityRevision)return;
-    if(track)track.contentHint=videoContentHint(main);
-    appliedCaptureQuality=main;
-    const previewChanged=nativeEncodingKey('',previous)!==nativeEncodingKey('',main);
+    const previewChanged=changed.has('') && nativeEncodingKey('',appliedScreenQuality.get(''))!==nativeEncodingKey('',main);
     for(const source of hostShares.sources.values()){
-      const track=source.stream?.getVideoTracks()[0],fps=hostScreenQuality(source.id).frameRate;
+      if(!changed.has(source.id))continue;
+      const quality=settings.get(source.id),track=source.stream?.getVideoTracks()[0],fps=quality.frameRate;
+      if(track)track.contentHint=videoContentHint(quality);
       if(track && source.appliedFrameRate!==fps){
-        source.appliedFrameRate=fps;
         await track.applyConstraints({frameRate:{ideal:fps,max:fps}}).catch(()=>{});
+        source.appliedFrameRate=fps;
       }
     }
     if(revision!==qualityRevision)return;
-    const updates=[...hostPeers.values()].map(p=>applyPeerQuality(p));
-    updates.push(hostViewPopouts.refreshQuality());
-    if(nativeCapture && previewChanged)updates.push(startNativePreview());
+    const updates=[];
+    for(const p of hostPeers.values()){
+      shareViews(p);
+      if(changed.has(p.videoSourceId || ''))updates.push(applyPeerQuality(p));
+    }
+    for(const id of changed)updates.push(hostViewPopouts.refreshQuality(undefined,id,false));
+    if(nativeCapture && changed.has(''))updates.push(startNativePreview());
     const failed=(await Promise.allSettled(updates)).find(result=>result.status==='rejected');
     if(revision!==qualityRevision)return;
-    streamInfo(actual || (nativeCapture ? nativeSource : null));
+    if(!captureError && !failed)for(const id of changed){
+      pendingScreenQuality.delete(id);
+      if(!id || hostShares.get(id))appliedScreenQuality.set(id,settings.get(id));
+    }
+    if(changed.has(''))streamInfo(actual || (nativeCapture ? nativeSource : null));
     if(captureError || failed)$('#hostStreamInfo').textContent = 'Some video settings could not be applied. Try a lower resolution or frame rate.';
     if(previewChanged)refreshCodecSupport().catch(()=>{});
   });
@@ -656,7 +701,12 @@ function renderScreenQualityFields(){
   const screen=qualityScreens.find(source=>source.id===qualitySource);
   const panel=$('#hostScreenQualityFields');
   panel.hidden=!screen;$('#hostGlobalQualityFields').hidden=!!screen;
-  for(const button of $('#hostScreenOverrides').querySelectorAll('button'))button.setAttribute('aria-pressed',String((button.dataset.sourceId ?? null)===qualitySource));
+  for(const button of $('#hostScreenOverrides').querySelectorAll('button')){
+    const id=button.dataset.sourceId ?? null,customized=screenOverrides.has(id);
+    button.setAttribute('aria-pressed',String(id===qualitySource));
+    button.classList.toggle('has-quality-override',customized);
+    if(id!==null)button.setAttribute('aria-label',`${button.dataset.screenName}${customized?', custom quality':''}`);
+  }
   $('#streamPriorityNote').textContent=priorityNotes[$('#streamPriority').value] || '';
   if(!screen)return;
   const quality=hostScreenQuality(screen.id),inherits=!screenOverrides.has(screen.id);
@@ -680,6 +730,7 @@ function selectScreenQuality(id,focus=false){
 function updateScreenOverrides(){
   const sources=sharedSources(),hasMain=sources.some(source=>!source.id);
   const entries=sources.map((source,index)=>({...source,number:hasMain?index+1:index+2}));
+  for(const id of appliedScreenQuality.keys())if(id && !hostShares.get(id)){appliedScreenQuality.delete(id);pendingScreenQuality.delete(id);}
   for(const id of screenOverrides.keys())if(!entries.some(source=>source.id===id))screenOverrides.delete(id);
   const list=$('#hostScreenOverrides');
   const signature=JSON.stringify(entries);
@@ -688,18 +739,20 @@ function updateScreenOverrides(){
       if(!id || qualityScreens.some(source=>source.id===id))continue;
       const legacy=screenQuality(captureQuality,id);
       if(legacy!==captureQuality)screenOverrides.set(id,{...legacy,autoThrottle:legacy.autoThrottle!==false,minHeight:legacy.minHeight || 480});
+      if(!appliedScreenQuality.has(id))appliedScreenQuality.set(id,hostScreenQuality(id));
     }
     list.dataset.sources=signature;
     for(const button of list.querySelectorAll('[data-source-id]'))button.remove();
     for(const {id,label,number} of entries){
       const button=document.createElement('button');button.type='button';button.className='button small-button';
       button.textContent=number;button.dataset.sourceId=id;button.title=label;
-      button.setAttribute('aria-label',`Screen ${number}, ${label}`);button.onclick=()=>selectScreenQuality(id);
+      button.dataset.screenName=`Screen ${number}, ${label}`;button.onclick=()=>selectScreenQuality(id);
       list.append(button);
     }
   }
   qualityScreens=entries;
   selectScreenQuality(qualitySource);
+  document.dispatchEvent(new Event('screen-quick-refresh'));
 }
 function resetScreenOverrides(){screenOverrides.clear();qualitySource=null;}
 $('#hostScreenOverrides button').onclick=()=>selectScreenQuality(null);
@@ -869,9 +922,9 @@ const hostViewPopouts=new HostViewPopouts({
   source:id=>hostShares.get(id) || (!id && !audioOnly() && hostMediaActive()?{kind:nativeCapture?'native':'browser',stream:captureStream,identity:nativeCapture?captureEpoch:captureStream}:null),
   audioTrack:id=>id?hostShares.audioTrack(hostShares.get(id)):browserMediaStream().getAudioTracks().find(track=>track.readyState==='live'),
   nativeCommand,ice:()=>fetchIce(hostRoom.roomId),sourceHeight:id=>sourceSettings(id).height,
-  quality:(p,id,adaptation)=>effectiveQuality(hostScreenQuality(id),p.requestedQuality,sourceSettings(id),adaptation)
+  quality:(p,id,adaptation)=>effectiveQuality(hostScreenQuality(id),requestedViewQuality(p,id),sourceSettings(id),adaptation)
 });
-const guestViewPopouts=new GuestViewPopouts({send:msg=>{if(clientPeer?.control?.readyState==='open')clientPeer.control.send(JSON.stringify(msg));},status:toast,soundChanged:()=>refreshGuestScreenSound(),toggleSound:id=>toggleGuestScreenSound(id),selectedSoundBlocked:()=>$('#clientAudio').playbackBlocked===true});
+const guestViewPopouts=new GuestViewPopouts({send:msg=>{if(clientPeer?.control?.readyState==='open')clientPeer.control.send(JSON.stringify(msg));},status:toast,soundChanged:()=>refreshGuestScreenSound(),toggleSound:id=>toggleGuestScreenSound(id),selectedSoundBlocked:()=>$('#clientAudio').playbackBlocked===true,quickSettings:guestQuickSettings});
 const hostShares=new HostShares({root:$('#hostLiveSourceBody'),primaryShared:()=>!audioOnly() && hostMediaActive(),nativeAvailable:()=>nativeCaptureAvailable && $('#captureBackend').value==='native',
   addNative:id=>nativeCommand('native-source-add','preview',{id}),removeNative:sourceId=>nativeCommand('native-source-remove','preview',{sourceId}),controlNative:(sourceId,enabled)=>nativeCommand('native-window-control','preview',{sourceId,enabled}),
   setNativeAudio:(sourceId,enabled)=>nativeCommand('native-audio','preview',{sourceId,enabled}),nativeAudioAvailable:source=>nativeAudioToolsReady() && (source.settings?.kind!=='window' || nativeAudioCapability.window),audioChanged:publishScreenAudio,quality:()=>captureQuality,status:hostStatus,notify:toast,
@@ -881,22 +934,24 @@ function chooseGuestView(sourceId){
   if(guestTiles.active){guestTiles.feature(sourceId);return;}
   if(clientPeer?.control?.readyState!=='open' || sourceId===guestTiles.primary)return;
   if(!guestTiles.switching)guestTiles.beginSwitch();
+  document.dispatchEvent(new Event('screen-quick-refresh'));
   releaseDesktopClient();updateDesktopMouse();
   clientPeer.control.send(JSON.stringify({type:'select-view',sourceId}));
 }
 const clientViews=guestViewSelector($('#clientStage'),chooseGuestView,sourceId=>guestViewPopouts.open(sourceId));
 const floatingScreens=new FloatingScreens({
-  sound:(source,button)=>guestViewPopouts.bindSoundButton(source.id,button),
+  quickSettings:guestQuickSettings,
+  sound:(source,button)=>source.id==='screen-self'?undefined:guestViewPopouts.bindSoundButton(source.id,button),
   attach:(source,video,note)=>{
     if(source.stream)return mirrorVideo(video,note,source.stream);
-    if(source.id!==guestTiles.primary || !$('#clientVideo').srcObject)return guestViewPopouts.attach(source.id,video,note);
+    if(source.id!==guestTiles.primary || !$('#clientVideo').srcObject)return guestViewPopouts.attach(source.id,video,note,{keepOnReconnect:true});
     // Reuse the already-decoded primary video. If the call changes its primary
     // selection, keep this floating view pinned to its original source.
     let detach=mirrorPlayer($('#clientVideo'),video,note);
     const keepSource=()=>{
       if(guestTiles.primary===source.id)return;
       detach();
-      detach=guestViewPopouts.attach(source.id,video,note);
+      detach=guestViewPopouts.attach(source.id,video,note,{keepOnReconnect:true});
       document.removeEventListener('shared-view-selection',keepSource);
     };
     document.addEventListener('shared-view-selection',keepSource);
@@ -905,6 +960,7 @@ const floatingScreens=new FloatingScreens({
   notify:toast,changed:()=>updatePopout(),focusChanged:()=>{if(!floatingScreens.focused && !nativeGuest.active && (document.hidden || !document.hasFocus()))releaseClient();}
 });
 const guestTiles=new GuestTiles({stage:$('#clientStage'),video:$('#clientVideo'),views:$('#clientSharedViews'),subscriptions:guestViewPopouts,selectView:chooseGuestView,allowDoubleClick:()=>!$('#clientDesktopMouse').checked,mediaControls:owner=>participantMediaControls('client',owner),
+  quickControls:(tile,source,button)=>bindScreenQuickControls(tile,()=>guestQuickSettings(source()),{allowContext:allowGuestScreenMenu,button}),
   openFloating:source=>{if(canFloatScreen(source))floatingScreens.open(source).catch(()=>toast('Could not open the pop-out window.'));},sourcesChanged:sources=>{floatingScreens.updateSources(sources.filter(canFloatScreen));updatePopout();},changed:(active,featured)=>{
   releaseDesktopClient();if(clientPeer?.control?.readyState==='open')clientPeer.control.send(JSON.stringify({type:'control-view',sourceId:active?featured:guestTiles.primary}));updateDesktopMouse();
 }});
@@ -916,7 +972,10 @@ function setControlView(p,sourceId){
 }
 function sharedSources(){return [...(!audioOnly() && hostMediaActive()?[{id:'',label:'Main screen',audio:primaryShareHasAudio(),independentAudio:!hybridAudioWanted()}]:[]),...[...hostShares.sources.values()].map(s=>({id:s.id,label:s.label,audio:hostShares.hasAudio(s)}))];}
 function shareViews(p){
-  if(p.control?.readyState==='open')p.control.send(JSON.stringify({type:'shared-views',selected:p.videoSourceId || '',sources:sharedSources()}));
+  if(p.control?.readyState==='open')p.control.send(JSON.stringify({type:'shared-views',selected:p.videoSourceId || '',sources:sharedSources().map(source=>{
+    const policy=hostScreenQuality(source.id),actual=sourceSettings(source.id);
+    return {...source,quality:{height:Math.min(policy.height || 2160,actual.height || 2160),frameRate:Math.min(policy.frameRate,actual.frameRate || 120),autoThrottle:policy.autoThrottle!==false}};
+  })}));
 }
 async function publishScreenAudio(sourceId){
   document.dispatchEvent(new Event('host-shares-change'));
@@ -936,6 +995,60 @@ function refreshGuestScreenSound(){
   guestViewPopouts.refreshSoundControls();
 }
 function guestScreenMuted(id){return id?guestViewPopouts.muted(id):readPreference('sharedSound',true)===false;}
+function meshQuickSettings(room,source){
+  if(!source.stream || !source.owner || source.id==='screen-self')return {sourceId:source.id,label:source.label,scope:'Only your playback',sound:source};
+  const request=room.viewLimits.get(source.owner);
+  const limitSelect=(key,label,control,value)=>{
+    const field=quickSelect(key,label,room.$(control),value ?? '');
+    field.options.unshift(['','Sender limit']);
+    return field;
+  };
+  return {sourceId:source.id,identity:source.stream,label:source.label,scope:'Only your playback',sound:source,fields:[
+    limitSelect('height','Resolution limit','resolution',request?.height),
+    limitSelect('fps','Frame rate limit','fps',request?.fps),
+    {key:'automatic',label:'Allow adaptive quality',value:request?.automatic!==false},
+  ],change:(key,value)=>room.requestViewQuality(source.owner,{[key]:typeof value==='boolean'?value:Number(value) || undefined}),
+  reset:{label:'Use sender quality',run:()=>room.requestViewQuality(source.owner,null)}};
+}
+function guestQuickSettings(source){
+  if(!source)return;
+  const id=source.id;
+  if(id==='screen-self'){
+    const controls={resolution:clientScreens.$('resolution'),frameRate:clientScreens.$('fps'),automatic:clientScreens.$('automatic')};
+    const audio=clientScreens.$('audio');
+    const hasSound=clientScreens.stream?.getAudioTracks().some(track=>track.readyState==='live');
+    return {sourceId:id,identity:clientScreens.stream,label:source.label,scope:'Everyone watching this share',sound:{audio:hasSound,muted:!audio.checked,soundMode:'share',toggleSound:()=>audio.click()},fields:[
+      quickSelect('resolution','Resolution limit',controls.resolution,controls.resolution.value,clientScreens.ownLimit.height),
+      quickSelect('frameRate','Frame rate limit',controls.frameRate,controls.frameRate.value,clientScreens.ownLimit.fps),
+      {key:'automatic',label:'Adaptive quality',value:controls.automatic.checked},
+    ],change:(key,value)=>{
+      const control=controls[key];
+      if(control.type==='checkbox')control.checked=value;else control.value=value;
+      control.dispatchEvent(new Event('change',{bubbles:true}));
+    }};
+  }
+  const shared=guestViewPopouts.sources.get(id);
+  if(!shared)return meshQuickSettings(clientScreens,source);
+  const selected=id===guestViewPopouts.selected;
+  const limits=(selected && (clientPeer?.hostLimitSource ?? id)===id?clientPeer?.hostLimit:null) || shared.quality;
+  const request=clientScreenRequests.get(id) || {};
+  const resolution=request.resolution ?? $('#clientResolution').value;
+  const frameRate=request.frameRate ?? $('#clientFramerate').value;
+  const automatic=limits?.autoThrottle!==false && (request.automatic ?? unlockedClientAdaptive ?? $('#clientAutoThrottle').checked);
+  const customized=clientScreenRequests.get(id)!=null;
+  return {sourceId:id,label:shared.label,scope:'Only your playback',quality:customized?'Custom playback quality':'Using your default quality',sound:{audio:shared.audio && (selected || shared.independentAudio!==false),muted:guestScreenMuted(id),soundBlocked:selected?$('#clientAudio').playbackBlocked:guestViewPopouts.blocked(id),toggleSound:()=>toggleGuestScreenSound(id)},fields:[
+    quickSelect('resolution','Resolution limit',$('#clientResolution'),Number(resolution)>limits?.height?'host':resolution,limits?.height),
+    quickSelect('frameRate','Frame rate limit',$('#clientFramerate'),Number(frameRate)>limits?.frameRate?'0':frameRate,limits?.frameRate),
+    {key:'automatic',label:'Adaptive quality',value:automatic,disabled:limits?.autoThrottle===false},
+    quickMinimum($('#clientMinimumResolution'),request.minHeight ?? $('#clientMinimumResolution').value,Math.min(Number(resolution) || Infinity,limits?.height || Infinity),!automatic),
+  ],change:(key,value)=>{
+    clientScreenRequests.set(id,{...request,[key]:value});
+    sendScreenRequest(id,clientScreenRequests.get(id));
+  },reset:{label:'Use my default quality',disabled:!customized,run:()=>{
+    // Keep a reset until the share ends so recovery can replay a lost update.
+    clientScreenRequests.set(id,null);sendScreenRequest(id,null);
+  }}};
+}
 function toggleGuestScreenSound(id){
   const selected=id===guestViewPopouts.selected,blocked=selected?$('#clientAudio').playbackBlocked:guestViewPopouts.blocked(id);
   const muted=blocked?false:!guestScreenMuted(id);
@@ -957,12 +1070,14 @@ function shareQualityLimit(p) {
   if (p.control?.readyState !== 'open') return;
   const host=hostScreenQuality(p.videoSourceId);
   const source=sourceSettings(p.videoSourceId);
-  p.control.send(JSON.stringify({ type: 'quality-limit', host: { ...host, width: Math.min(host.width || Infinity, source.width || Infinity), height: Math.min(host.height || Infinity, source.height || Infinity), frameRate: Math.min(host.frameRate, source.frameRate || Infinity) }, assigned: p.quality }));
+  p.control.send(JSON.stringify({ type: 'quality-limit', sourceId:p.videoSourceId || '',host: { ...host, width: Math.min(host.width || Infinity, source.width || Infinity), height: Math.min(host.height || Infinity, source.height || Infinity), frameRate: Math.min(host.frameRate, source.frameRate || Infinity) }, assigned: p.quality }));
 }
+function requestedViewQuality(p,id){return {...p.requestedQuality,...p.viewRequests?.get(id || '')};}
 async function applyPeerQuality(p) {
   const host=hostScreenQuality(p.videoSourceId);
-  if (host.autoThrottle === false || p.requestedQuality?.automatic === false) p.adaptation = {};
-  p.quality = effectiveQuality(host, p.requestedQuality, sourceSettings(p.videoSourceId), p.adaptation);
+  const request=requestedViewQuality(p,p.videoSourceId);
+  if (host.autoThrottle === false || request.automatic === false) p.adaptation = {};
+  p.quality = effectiveQuality(host, request, sourceSettings(p.videoSourceId), p.adaptation);
   if(p.nativeCodecUnavailable || localHostPlatform==='darwin')p.quality.codec='h264';
   shareQualityLimit(p);
   if (p.receiveVideo === false) return;
@@ -1253,7 +1368,7 @@ function closeHostPeer(peerId) {
   const p = hostPeers.get(peerId); if (!p) return;
   hostViewPopouts.closePeer(p);
   hostVoice.removeControl(peerId);hostCamera.removeControl(peerId);hostScreens.removeControl(peerId);hostChat.removePeer(peerId);
-  stopPeerVideo(p); releasePeer(peerId); hostPeers.delete(peerId); clearTimeout(p.recovery); clearTimeout(p.expiryTimer); clearTimeout(p.updateTimeout); clearTimeout(p.fallbackTimer); clearTimeout(p.nativeTimeout);clearTimeout(p.qualityRequestTimer);p.grace?.stop(); p.pc.close();
+  stopPeerVideo(p); releasePeer(peerId); hostPeers.delete(peerId); clearTimeout(p.recovery); clearTimeout(p.expiryTimer); clearTimeout(p.updateTimeout); clearTimeout(p.fallbackTimer); clearTimeout(p.nativeTimeout);clearTimeout(p.qualityRequestTimer);clearTimeout(p.viewQualityTimer);p.grace?.stop(); p.pc.close();
   if(p.pairingId && invitations.delete(p.pairingId)){
     if(lastInvitation?.pairingId===p.pairingId && hostRoom && !hostEnding){
       $('#downloadInvitation').disabled=true;$('#copyInvitation').disabled=true;$('#hostInvitation').value='';
@@ -1451,6 +1566,12 @@ async function recoverHostPeer(peerId) {
   try {
     const config = await fetchIce(hostRoom.roomId);
     const p = await makeHostPeer(peerId, previous.slot, true, config);
+    const sourceId=previous.videoSourceId || '';
+    const sources=sharedSources(),available=new Set(sources.map(source=>source.id));
+    p.videoSourceId=available.has(sourceId)?sourceId:sources[0]?.id || '';
+    p.viewRequests=new Map([...(previous.viewRequests || [])].filter(([id])=>available.has(id)));
+    p.requestedQuality=previous.requestedQuality;
+    send(hostWs,{type:'peer-view',peerId,additional:!!p.videoSourceId,sourceId:p.videoSourceId});
     p.fallback = previous.fallback; p.fallbackReady = true; p.recoveryId = crypto.randomUUID();
     hostStatus('Reconnecting your friend through the backup connection…');
     await p.pc.setLocalDescription(await p.pc.createOffer()); await gatherIce(p.pc);
@@ -1505,12 +1626,46 @@ function hostChannel(p, id, ch) {
     return;
   }
   if (ch.label === 'control') {
-    p.control = ch;ch.onclose=()=>{if(hostPeers.get(id)===p){hostVoice.removeControl(id);hostCamera.removeControl(id);hostScreens.removeControl(id);}};
+    let queue=Promise.resolve();
+    const pendingViewQuality=new Map();
+    function flushViewQuality(){
+      queue=queue.then(async()=>{
+        if(hostEnding || hostPeers.get(id)!==p || p.control!==ch || ch.readyState!=='open')return;
+        p.viewQualityTimer=undefined;
+        // Use the latest edit even if earlier signaling is still in flight.
+        const batch=[...pendingViewQuality];
+        pendingViewQuality.clear();
+        const available=new Set(sharedSources().map(source=>source.id));
+        const changed=[];
+        p.viewRequests ??=new Map();
+        for(const [sourceId,quality] of batch){
+          if(!available.has(sourceId))continue;
+          if(quality===null){
+            if(!p.viewRequests.delete(sourceId))continue;
+          }else{
+            if(JSON.stringify(quality)===JSON.stringify(p.viewRequests.get(sourceId)))continue;
+            p.viewRequests.set(sourceId,quality);
+          }
+          changed.push(sourceId);
+        }
+        const updates=changed.map(sourceId=>hostViewPopouts.refreshQuality(p,sourceId));
+        if(changed.includes(p.videoSourceId || '')){
+          p.adaptation={};
+          updates.push(applyPeerQuality(p));
+        }
+        await Promise.allSettled(updates);
+      }).catch(error=>hostStatus(`Connection update failed: ${error.message}`));
+    }
+    clearTimeout(p.viewQualityTimer);p.viewQualityTimer=undefined;
+    p.control = ch;ch.onclose=()=>{
+      if(p.control!==ch)return;
+      clearTimeout(p.viewQualityTimer);p.viewQualityTimer=undefined;pendingViewQuality.clear();
+      if(hostPeers.get(id)===p){hostVoice.removeControl(id);hostCamera.removeControl(id);hostScreens.removeControl(id);}
+    };
     ch.onopen = () => { inputStreams?.hostAttach(id,ch);reverseControllers?.hostAttach(id,ch);if(!p.handoff){hostVoice.addControl(id,voiceSend(ch));hostCamera.addControl(id,voiceSend(ch));hostScreens.addControl(id,voiceSend(ch));}
       const outputActive=hostRoom?.controllerOutputsActive || !hostRoom?.config.dynamicControllers || [...hostPeers.values()].some(peer=>peer.slots?.length);
       ch.send(JSON.stringify({type:'controller-origin',instance:hostRoom?.controllerInstance,outputActive}));
       ch.send(JSON.stringify({ type: 'slot', inputFormat:inputWireVersion, slot: p.slot, slots:p.slots, generation:p.generation || 0, capacity:hostRoom?.config.maxRemoteControllers,adaptiveControllers:hostRoom?.config.adaptiveControllers===true, controllerType:hostRoom?.config.controllerType,dynamicControllers:hostRoom?.config.dynamicControllers===true,wantsController:p.wantsController===true, cursorColor: cursorColor(id,p.slot) })); shareInputPolicy(p); shareCaptureInfo(p); shareQualityLimit(p); shareViews(p);renderPeers(); };
-    let queue = Promise.resolve();
     ch.onmessage = e => {
       // Video signaling must not hold up the control latency probe.
       const probe = typeof e.data === 'string' && e.data.length <= 131072 ? parse(e.data) : null;
@@ -1523,6 +1678,19 @@ function hostChannel(p, id, ch) {
       if(probe?.type==='camera'){if(hostPeers.get(id)===p)hostCamera.receive(id,probe);return;}
       if(probe?.type==='voice'){if(hostPeers.get(id)===p)hostVoice.receive(id,probe);return;}
       if (probe?.type === 'ping') { ch.send(JSON.stringify({ type: 'pong', id: probe.id })); return; }
+      if(probe?.type==='view-quality-request'){
+        const {sourceId,quality}=probe;
+        if(hostPeers.get(id)!==p || p.control!==ch || typeof sourceId!=='string' ||
+           (sourceId?!hostShares.get(sourceId):audioOnly() || !hostMediaActive()))return;
+        if(quality===null)pendingViewQuality.set(sourceId,null);
+        else if(quality && typeof quality==='object'){
+          const safe=clientQuality(quality),request={};
+          for(const key of ['resolution','frameRate','automatic','minHeight'])if(Object.hasOwn(quality,key))request[key]=safe[key];
+          pendingViewQuality.set(sourceId,request);
+        }else return;
+        p.viewQualityTimer ??=setTimeout(flushViewQuality,100);
+        return;
+      }
       queue = queue.then(async () => {
       if (hostEnding || hostPeers.get(id) !== p || typeof e.data !== 'string' || e.data.length > 131072) return;
       const msg = parse(e.data);
@@ -1559,11 +1727,12 @@ function hostChannel(p, id, ch) {
         p.cameraPressureAt=performance.now();p.cameraPressure=Object.fromEntries(['loss','rttMs','bufferMs','freezeMs','decodeMs'].map(k=>[k,typeof msg.metrics?.[k]==='number' && Number.isFinite(msg.metrics[k])?Math.max(0,Math.min(k==='loss'?1:5000,msg.metrics[k])):0]));
         if(Date.now()-(p.lastDiagnostic || 0)>=1000){p.lastDiagnostic=Date.now();hostDiagnostics.record({...msg.metrics,lossPercent:typeof msg.metrics?.loss==='number'?msg.metrics.loss*100:null},{source:id,label:`Guest ${p.diagnosticNumber ??= ++diagnosticGuestNumber}`});}
         const host=hostScreenQuality(p.videoSourceId),source=sourceSettings(p.videoSourceId);
-        const automatic = host.autoThrottle !== false && p.requestedQuality?.automatic !== false;
+        const request=requestedViewQuality(p,p.videoSourceId);
+        const automatic = host.autoThrottle !== false && request.automatic !== false;
         if (!automatic || p.nativeBusy || p.nativeNegotiation || p.nativePresentationId || Date.now()-(p.mediaSettledAt || 0)<4000 || Date.now() - (p.lastMetrics || 0) < 1000 || Date.now() - p.createdAt < 8000) return;
         p.lastMetrics = Date.now();
         const metrics = adaptationMetrics(msg.metrics);
-        const limits=effectiveQuality(host,p.requestedQuality,source);
+        const limits=effectiveQuality(host,request,source);
         const previous=p.adaptation;
         p.adaptation=adaptQuality(previous,metrics,limits.height || source.height || 2160,Date.now(),limits.minHeight,limits);
         if(previous?.height!==p.adaptation.height || previous?.frameRate!==p.adaptation.frameRate)await applyPeerQuality(p);
@@ -2055,6 +2224,7 @@ async function startCapture(reusePrepared = false,{allowPicker=true}={}) {
     if(room)await nativeCommand('capture-source','preview',audioOnly()?{kind:'none'}:{kind:'browser',surface:actual.displaySurface,label:track.label,region:captureArea.current()});
     if(epoch!==captureEpoch || room!==hostRoom) {if(stream!==captureStream)stream.getTracks().forEach(t=>t.stop());return false;}
     const old = captureStream; captureStream = stream; if(old!==stream)old?.getTracks().filter(t=>!stream.getTracks().includes(t) && !(stream._areaSource || stream).getTracks().includes(t)).forEach(t => t.stop());
+    track.contentHint=videoContentHint(quality);appliedCaptureQuality=quality;
     selectedSource='browser-selected';
     if(actual.displaySurface==='window' && windowTargetAvailable)refreshCaptureTargets(true);
     try {localStorage.setItem('webrtc-pad:capture-method','browser');}catch{}
@@ -2070,6 +2240,7 @@ async function startCapture(reusePrepared = false,{allowPicker=true}={}) {
     if(epoch!==captureEpoch)return false;
     hostStatus(!room?'Screen selected. Start your session when ready.':stream.getAudioTracks().length ? 'Streaming video and audio' : 'Streaming video. This capture source did not provide audio.');
     if(!room)tutorialEvent('host-source-ready');
+    if(!room)document.dispatchEvent(new Event('screen-quick-refresh'));
     document.dispatchEvent(new Event('call-share-ready'));
     return true;
   } catch (error) { if(epoch!==captureEpoch){if(stream && stream!==captureStream)stream.getTracks().forEach(t=>t.stop());return false;}if (stream && stream !== captureStream) stream.getTracks().forEach(t => t.stop()); const message=error.name==='NotAllowedError'?(selectedSource==='none'?'Screen selection cancelled. Start without video, or choose a source.':'Screen selection cancelled. Your previous source is kept.'):error.message;if(nativeCapture && error.name!=='NotAllowedError'){const cleanup=stopCapture();hostStatus(message);await cleanup;}else hostStatus(message);return false; }
@@ -2179,6 +2350,29 @@ $('#inputSource').addEventListener('change', () => {
   updateDesktopMouse();
 });
 const desktopVideo = $('#clientStage'); desktopVideo.tabIndex = 0;
+document.addEventListener('screen-quick-open',()=>{
+  if(document.body.dataset.mode!=='client')return;
+  keys.clear();releaseDesktopClient();releaseGuestPointer();inputStreams?.releaseBrowser();
+});
+function allowGuestScreenMenu(event){
+  if(gameMouse?.locked())return false;
+  const source=event.target.closest('.view-tile')?.dataset.sourceId;
+  if(source!==undefined && source!==guestTiles.featured)return true;
+  return !($('#clientDesktopMouse').checked && desktopReady()) && !(pointerReady() && clientPeer?.showCursors) && !(controllerMouseReady(event) && Object.values(keyboardMapping.bindings).includes('Mouse2'));
+}
+const singleScreenQuick=screenQuickButton(document);
+singleScreenQuick.classList.add('single-screen-quick');desktopVideo.append(singleScreenQuick);
+bindScreenQuickControls(desktopVideo,()=>{
+  if(guestTiles.active || guestTiles.switching || !$('#clientVideo').srcObject?.getVideoTracks().length)return;
+  return guestQuickSettings(guestViewPopouts.sources.get(guestViewPopouts.selected));
+},{allowContext:allowGuestScreenMenu,button:singleScreenQuick});
+const hostPreviewQuick=screenQuickButton(document);
+hostPreviewQuick.classList.add('single-screen-quick');$('#hostStage').append(hostPreviewQuick);
+bindScreenQuickControls($('#hostStage'),()=>{
+  if(!$('#hostPreview').srcObject?.getVideoTracks().length || audioOnly())return;
+  return hostQuickSettings({id:'host-main',label:'Your main screen',qualityId:''});
+},{button:hostPreviewQuick});
+for(const event of ['emptied','loadedmetadata'])$('#hostPreview').addEventListener(event,()=>document.dispatchEvent(new Event('screen-quick-refresh')));
 gameMouse=relativeMouse(desktopVideo,{allowed:()=>!nativeGuest.active && clientPeer?.desktopRelative===true && $('#clientDesktopMouse').checked && desktopReady() && !guestTiles.viewOnly,send:delta=>{const p=clientPeer;if(p?.desktopChannel?.readyState==='open' && p.desktopChannel.bufferedAmount<8192)p.desktopChannel.send(JSON.stringify({type:'desktop-relative',seq:desktopMoveSequence++,sourceId:p.desktopSourceId || '',desktopToken:p.desktopToken,...delta}));},release:()=>{desktopButtons.clear();desktopKeys.clear();desktopPositionDirty=false;sendDesktopSnapshot();}});
 $('#clientDesktopMouse').closest('label').after(gameMouse.button);document.addEventListener('call-settings-refresh',()=>gameMouse.refresh());
 function pointerPoint(event){if(!pointerReady() || clientPeer?.showCursors!==true || event.target.closest('button,input,select,textarea,a,.call-toolbar,.call-sheet,.tile-title,.controller-join-prompt,.single-view-picker'))return null;const surface=pointerSurface();return surface?videoPoint(surface,event.clientX,event.clientY):null;}
@@ -2230,6 +2424,10 @@ window.addEventListener('keydown', event => {
 window.addEventListener('keyup', event => { if(!nativeGuest.latched && desktopKeys.delete(event.code)) { event.preventDefault(); sendDesktopSnapshot(); } });
 setInterval(sendDesktopSnapshot, 1000 / 30);
 let qualityRequestTimer,clientQualityRevision=0,unlockedClientAdaptive;
+const clientScreenRequests=new Map();
+function sendScreenRequest(sourceId,quality,p=clientPeer){
+  if(p?.control?.readyState==='open')p.control.send(JSON.stringify({type:'view-quality-request',sourceId,quality}));
+}
 function setClientResolutionPolicy(fixed){
   const setting=$('#clientAutoThrottle'),panel=$('#clientVideoSettings');
   if(fixed===panel.classList.contains('host-fixed-resolution'))return;
@@ -2301,8 +2499,8 @@ function connectFallback(session) {
       assignedSlot = isPlayerSlot(msg.slot) ? msg.slot : null;
       $('#clientSlot').textContent = assignedSlot?.toUpperCase() || 'Watching';
       playerConnectionUI('connecting'); clientStatus('Reconnecting through the backup connection…');
-      const reply = await negotiateClient({ ...session, sdp: msg.sdp, ice: sanitizeIceConfig(msg.ice), slot: assignedSlot });
-      send(ws, { type: 'answer', id: msg.id, sdp: reply.sdp });
+      const reply = await negotiateClient({ ...session, sdp: msg.sdp, ice: sanitizeIceConfig(msg.ice), slot: assignedSlot },null,{recovering:true});
+      if(fallbackWs===ws)send(ws, { type: 'answer', id: msg.id, sdp: reply.sdp });
     }
   }).catch(error => clientStatus(`Automatic reconnection failed: ${error.message}`)); };
   ws.onclose = ev => {
@@ -2432,13 +2630,17 @@ function releaseClient() {
   if (clientPeer?.channel?.readyState === 'open') for(let controller=0;controller<assignedSlots.length;controller++) clientPeer.channel.send(inputPayload({seq:sequence++,controller,generation:controllerGeneration,source:controller===0 && $('#inputSource').value==='keyboard'?'keyboard':'gamepad',state:neutralState()},clientPeer.inputFormat));
   if (clientPeer?.control?.readyState === 'open') clientPeer.control.send(JSON.stringify({ type: 'release', seq:sequence++ }));
 }
-function closeClientPeer({preserveVoice=false,keepTransport=false,preserveNative=false,preserveCameraPreview=false}={}) {
+function closeClientPeer({preserveVoice=false,keepTransport=false,preserveNative=false,preserveCameraPreview=false,preserveScreenSettings=false}={}) {
+  if(!preserveScreenSettings)clientScreenRequests.clear();
+  if(preserveScreenSettings)floatingScreens.beginReconnect(guestViewPopouts.sources);
+  else floatingScreens.clear();
+  document.dispatchEvent(new Event('screen-quick-close'));
   clearClientReplyExpiry();
   setClientResolutionPolicy(false);
   if (controllerPromptChoice) showControllerPrompt(null);
   if(!preserveVoice){if(!preserveCameraPreview || clientVoice.ready)clientVoice.setReady(false);if(!preserveCameraPreview)clientCamera.setReady(false);clientScreens.setReady(false);clientChat.setReady(false);}
   if(!preserveNative)nativeGuest.endSession();
-  guestTiles.clear();clientViews.clear();guestViewPopouts.clear();$('#clientVideo').muted=guestScreenMuted('');clearTimeout(videoRefreshTimer);videoRefreshUntil=0;
+  guestTiles.clear();clientViews.clear();guestViewPopouts.clear({recovering:preserveScreenSettings});$('#clientVideo').muted=guestScreenMuted('');clearTimeout(videoRefreshTimer);videoRefreshUntil=0;
   stopInputVideoClock();
   releaseClient(); clearInterval(sendTimer); clearInterval(statsTimer);
   const previous = clientPeer;previous?.cancelVideoHandover?.();previous?.grace?.stop();document.dispatchEvent(new CustomEvent('call-recovery',{detail:'closed'})); clientPeer = null; previous?.nativePC?.close();previous?.retiredPC?.close();previous?.hybridAudioPC?.close(); previous?.playback?.close();if(!keepTransport)previous?.pc.close(); $('#clientVideo').srcObject = null;
@@ -2779,8 +2981,8 @@ $('#clientStage').addEventListener('wheel',event=>{
 },{capture:true,passive:false});
 $('#clientStage').addEventListener('contextmenu',event=>{if(controllerMouseReady(event) && Object.values(keyboardMapping.bindings).includes('Mouse2'))event.preventDefault();});
 
-async function negotiateClient(invitation,transport) {
-  closeClientPeer(transport?{preserveVoice:true,keepTransport:true,preserveNative:true}:{preserveCameraPreview:!clientCamera.ready});
+async function negotiateClient(invitation,transport,{recovering=false}={}) {
+  closeClientPeer(transport?{preserveVoice:true,keepTransport:true,preserveNative:true}:{preserveCameraPreview:!clientCamera.ready,preserveScreenSettings:recovering});
   const pc = transport?.pc || new RTCPeerConnection(invitation.ice);
   clientConnectionReports.track(pc,'controls');
   clientDiagnostics.clear();
@@ -2827,6 +3029,7 @@ async function negotiateClient(invitation,transport) {
       return;
     }
     if (ch.label === 'control') {
+      let restoreScreenRequests=recovering;
       p.control = ch;ch.onclose=()=>{if(clientPeer===p){clientVoice.setReady(false);clientCamera.setReady(false);clientScreens.setReady(false);clientChat.setReady(false);}};
       const announceHostCapability=()=>{if(clientPeer===p && ch.readyState==='open')ch.send(JSON.stringify({type:'host-capability',enabled:canBecomeHost(),local:p.sameLocalApp===true}));};
       ch.onopen = async () => { inputStreams?.guestAttach(ch);reverseControllers?.guestAttach(ch);if(!p.handoff){clientVoice.connect(voiceSend(ch));clientCamera.connect(voiceSend(ch));clientScreens.connect(voiceSend(ch));}localConfig.then(announceHostCapability);await sendClientQuality(p);if(clientPeer===p && ch.readyState==='open')ch.send(JSON.stringify({ type: 'media-subscription', enabled: $('#clientReceiveVideo').checked })); };
@@ -2838,7 +3041,7 @@ async function negotiateClient(invitation,transport) {
         if(handoffMessage?.type==='host-handoff'){if(clientPeer===p || handoff.owns(ch))handoff.receive('host',handoffMessage,ch);return;}
         if(clientPeer===p && typeof ev.data==='string' && ev.data.length<=131072){const msg=parse(ev.data);if(msg?.type==='participants'){participants?.receive(msg);return;}if(msg?.type==='rumble'){receiveRumble(msg);return;}if(msg?.type==='screen'){clientScreens.receive(null,msg);return;}if(msg?.type==='camera'){clientCamera.receive(null,msg);return;}if(msg?.type==='voice'){clientVoice.receive(null,msg);return;}}
         queue = queue.then(async () => {
-        if (clientPeer !== p || typeof ev.data !== 'string' || ev.data.length > 131072) return;
+        if (clientPeer !== p || p.control!==ch || typeof ev.data !== 'string' || ev.data.length > 131072) return;
         const msg = parse(ev.data);
         if(msg?.type==='guest-view-request'){await sendGuestView(p,msg);return;}
         if(msg?.type==='controller-origin'){
@@ -2854,9 +3057,15 @@ async function negotiateClient(invitation,transport) {
         if(msg?.type==='controller-outputs-active'){p.localControllerJoin?.lock();return;}
         if(msg?.type==='shared-views'){
           clientViews.update(msg);guestViewPopouts.update(Array.isArray(msg.sources)?msg.sources:[],msg.selected);
+          for(const id of clientScreenRequests.keys())if(!guestViewPopouts.sources.has(id))clientScreenRequests.delete(id);
+          if(restoreScreenRequests){
+            restoreScreenRequests=false;
+            for(const [id,quality] of clientScreenRequests)sendScreenRequest(id,quality,p);
+            floatingScreens.finishReconnect();
+          }
           guestViewPopouts.setMuted('',guestScreenMuted(''));
           $('#clientVideo').muted=guestScreenMuted(guestViewPopouts.selected);p.playback.refresh();soundUI($('#clientVideo').muted);
-          refreshGuestScreenSound();document.dispatchEvent(new Event('shared-view-selection'));return;
+          refreshGuestScreenSound();document.dispatchEvent(new Event('screen-quick-refresh'));document.dispatchEvent(new Event('shared-view-selection'));return;
         }
         if(await guestViewPopouts.handle(msg))return;
         if(msg?.type==='capture-info') {
@@ -2904,6 +3113,7 @@ async function negotiateClient(invitation,transport) {
           const fields=value=>JSON.stringify([value?.width,value?.height,value?.frameRate,value?.maxBitrate,value?.codec]);
           const changed=fields(p.hostLimit)!==fields(msg.host);
           p.hostLimit = msg.host;
+          p.hostLimitSource=msg.sourceId;
           setClientResolutionPolicy(msg.host?.autoThrottle===false);
           if(changed)requestClientQuality();
           const height = msg.host?.height || 2160, fps = msg.host?.frameRate || 120;
@@ -2911,6 +3121,7 @@ async function negotiateClient(invitation,transport) {
           for (const option of $('#clientFramerate').options) option.disabled = option.value !== '0' && Number(option.value) > fps;
           const policy=msg.assigned?.autoThrottle===false?'Fixed quality':`Adaptive · min ${msg.assigned?.minHeight || 480}p`;
           $('#clientHostLimit').textContent = `Your stream · ${msg.assigned?.height ? msg.assigned.height + 'p' : 'Source size'} · ${Math.round(msg.assigned?.frameRate || fps)} fps · ${policy}.`;
+          document.dispatchEvent(new Event('screen-quick-refresh'));
           return;
         }
         if(msg?.type==='audio-stop'){stopHybridReceiver();return;}
@@ -3480,7 +3691,7 @@ const handoff=new HostHandoff({
         await stopCapture();
         send(hostWs,{type:'input-policy',allowKeyboard:keyboardAllowed,desktopMouse:false,desktopKeyboard:false,desktopFullAccess:false});
         send(hostWs,{type:'cursor-overlay',enabled:false});
-        for(const [id,p] of hostPeers){hostViewPopouts.closePeer(p);stopPeerVideo(p);releasePeer(id);for(const key of ['recovery','expiryTimer','updateTimeout','fallbackTimer','nativeTimeout','qualityRequestTimer'])clearTimeout(p[key]);hostDiagnostics.removeSource(id);}
+        for(const [id,p] of hostPeers){hostViewPopouts.closePeer(p);stopPeerVideo(p);releasePeer(id);for(const key of ['recovery','expiryTimer','updateTimeout','fallbackTimer','nativeTimeout','qualityRequestTimer','viewQualityTimer'])clearTimeout(p[key]);hostDiagnostics.removeSource(id);}
         hostPeers.clear();hostWs=null;hostRoom=null;clearTimeout(injectReconnect);const socket=injectWs;injectWs=null;socket?.close();
         for(const request of nativeRequests.values()){clearTimeout(request.timer);request.reject(Error('Host switched'));}nativeRequests.clear();
         resetScreenOverrides();hostSessionUI(false);hostShares.setActive(false);updateScreenOverrides();swapVoiceRoles(s.old.voice);swapCameraRoles(s.old.camera);swapScreenRoles(s.old.screen);swapChatRoles(s.old.chat);joinedControllers.length=0;buttonSnapshots.clear();enabled=false;
@@ -3617,7 +3828,7 @@ inputStreams=new AppInputs({state:()=>({hosting:!!hostRoom && !hostEnding,room:h
 $('#clientJoinControllers').onchange=()=>setControllerSharing($('#clientJoinControllers').checked);
 reverseControllers=new ReverseControllers({state:()=>({hosting:!!hostRoom && !hostEnding,client:clientPeer}),pads:()=>[...(navigator.getGamepads?.() || [])],pack:gp=>packGamepadState(gp,profileFor(gp),profileFor(gp)?.deadzone ?? Number($('#deadzone').value)),pauseOutgoing:()=>{if($('#clientJoinControllers').checked){$('#clientJoinControllers').checked=false;$('#clientJoinControllers').dispatchEvent(new Event('change',{bubbles:true}));}},notify:toast,hostAPI:packet=>inputStreams.api.publish({peerId:'host',...packet})});
 participants=new Participants({screens:side=>side==='host'?hostScreens:clientScreens,state:()=>({hosting:!!hostRoom,peers:hostPeers}),voice:side=>side==='host'?hostVoice:clientVoice,camera:side=>side==='host'?hostCamera:clientCamera});
-const screenLayouts=new ScreenLayouts({cursors:hostCursors,nativeCommand,quality:hostScreenQuality,notify:toast,hostShareList:()=>[...(!audioOnly() && hostMediaActive()?[{id:'',label:captureSourceTargets.find(t=>t.id===selectedSource)?.label || 'Main screen',...primarySoundControl()}]:[]),...[...hostShares.sources.values()].map(source=>({...source,...hostShares.audioControl(source)}))],removeShare:id=>id?hostShares.remove(id):stopCapture(),mediaControls:owner=>participantMediaControls('host',owner),hostScreens:()=>hostScreens,clientScreens:()=>clientScreens,hostCamera:()=>hostCamera,clientCamera:()=>clientCamera,guestTiles,hostSources:()=>{
+const screenLayouts=new ScreenLayouts({cursors:hostCursors,nativeCommand,quality:hostScreenQuality,quickSettings:hostQuickSettings,notify:toast,hostShareList:()=>[...(!audioOnly() && hostMediaActive()?[{id:'',label:captureSourceTargets.find(t=>t.id===selectedSource)?.label || 'Main screen',...primarySoundControl()}]:[]),...[...hostShares.sources.values()].map(source=>({...source,...hostShares.audioControl(source)}))],removeShare:id=>id?hostShares.remove(id):stopCapture(),mediaControls:owner=>participantMediaControls('host',owner),hostScreens:()=>hostScreens,clientScreens:()=>clientScreens,hostCamera:()=>hostCamera,clientCamera:()=>clientCamera,guestTiles,hostSources:()=>{
   const sources=[];if(previewWanted()){const stream=nativeCapture?$('#hostPreview').srcObject:captureStream;if(!audioOnly() && stream?.getVideoTracks().length)sources.push({id:'host-main',qualityId:'',owner:'host',kind:'screen',label:'Your main screen',stream,viewOnly:true,remove:()=>stopCapture(),...primarySoundControl()});for(const source of hostShares.sources.values())sources.push({id:`host-${source.id}`,qualityId:source.id,owner:'host',kind:'screen',label:source.label,...(source.stream?{stream:source.stream}:{}),viewOnly:true,remove:()=>hostShares.remove(source.id),...hostShares.audioControl(source)});}return sources;
 }});
 
