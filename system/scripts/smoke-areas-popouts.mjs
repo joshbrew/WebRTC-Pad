@@ -216,8 +216,8 @@ try{
     await host.locator('#resetGlobalQuality').click();
     assert.equal(await host.locator('#hostAutoThrottle').isChecked(),true);
     assert.equal(await host.locator('#streamPriority').isVisible(),true);
-    assert.equal(await host.locator('#streamResolution').inputValue(),'1080');
-    await host.locator('#streamResolution').selectOption('720');
+    assert.equal(await host.locator('#streamResolution').inputValue(),'720');
+    assert.equal(await host.locator('#streamPriority').inputValue(),'balanced');
     await host.locator('#hostAutoThrottle').uncheck();
     await host.locator('#hostSettingsSheet .help-button').click();
     await popouts[1].waitForFunction(()=>document.querySelector('video').videoHeight===480);

@@ -563,7 +563,8 @@ const localConfig=fetch('/config').then(r => r.ok ? r.json() : null).then(config
   localControllerInstance=config?.controllerInstance;
   if(config)applyConfig(config);
 }).catch(() => {});
-let captureQuality = streamSettings();
+const defaultHostQuality={...streamSettings('720',60,'balanced'),secondaryResolution:'main',minHeight:480,autoThrottle:true,codec:'h264'};
+let captureQuality = defaultHostQuality;
 const screenOverrides=new Map();
 function hostScreenQuality(id){
   return screenQuality(captureQuality,'',screenOverrides.get(id || ''));
@@ -597,7 +598,7 @@ function boundMinimumResolution(select,ceiling){
 }
 try {
   const saved = JSON.parse(localStorage.getItem('webrtc-pad:stream-quality'));
-  if (saved) captureQuality = { ...streamSettings(saved.resolution, saved.frameRate, saved.priority), secondaryResolution:secondaryResolution(saved.secondaryResolution),minHeight:[360,480,720,1080,1440,2160].includes(saved.minHeight)?saved.minHeight:480,autoThrottle: saved.autoThrottle !== false,codec:saved.codec==='h265'?'h265':'h264',...(['p1','p2','p4'].includes(saved.encoderPreset)?{encoderPreset:saved.encoderPreset}:{}) };
+  if (saved) captureQuality = { ...streamSettings(saved.resolution ?? defaultHostQuality.resolution, saved.frameRate ?? defaultHostQuality.frameRate, saved.priority ?? defaultHostQuality.priority), secondaryResolution:secondaryResolution(saved.secondaryResolution),minHeight:[360,480,720,1080,1440,2160].includes(saved.minHeight)?saved.minHeight:defaultHostQuality.minHeight,autoThrottle: saved.autoThrottle !== false,codec:saved.codec==='h265'?'h265':defaultHostQuality.codec,...(['p1','p2','p4'].includes(saved.encoderPreset)?{encoderPreset:saved.encoderPreset}:{}) };
 } catch { /* Defaults work without browser storage. */ }
 if(lastHostSetup){const saved=lastHostSetup.fields;captureQuality={...streamSettings(saved.streamResolution || captureQuality.resolution,saved.streamFramerate || captureQuality.frameRate,saved.streamPriority || captureQuality.priority),secondaryResolution:secondaryResolution(saved.streamSecondaryResolution ?? captureQuality.secondaryResolution),minHeight:Number(saved.streamMinimumResolution || captureQuality.minHeight || 480),autoThrottle:saved.hostAutoThrottle ?? captureQuality.autoThrottle,codec:saved.streamCodec || captureQuality.codec,...((saved.streamEncoderPreset ?? captureQuality.encoderPreset)?{encoderPreset:saved.streamEncoderPreset ?? captureQuality.encoderPreset}:{})};}
 $('#streamResolution').value = captureQuality.resolution; $('#streamFramerate').value = String(captureQuality.frameRate);
@@ -776,9 +777,9 @@ $('#resetScreenQuality').onclick=()=>{
   if(screenOverrides.delete(qualitySource)){changeStreamQuality();$('#screenUseGlobal').focus();}
 };
 $('#resetGlobalQuality').onclick=()=>{
-  const defaults=streamSettings();
-  for(const [id,value] of Object.entries({streamResolution:defaults.resolution,streamSecondaryResolution:'main',streamMinimumResolution:'480',streamFramerate:defaults.frameRate,streamPriority:defaults.priority,streamCodec:'h264',streamEncoderPreset:''}))$(`#${id}`).value=String(value);
-  $('#hostAutoThrottle').checked=true;
+  const defaults=defaultHostQuality;
+  for(const [id,value] of Object.entries({streamResolution:defaults.resolution,streamSecondaryResolution:defaults.secondaryResolution,streamMinimumResolution:defaults.minHeight,streamFramerate:defaults.frameRate,streamPriority:defaults.priority,streamCodec:defaults.codec,streamEncoderPreset:''}))$(`#${id}`).value=String(value);
+  $('#hostAutoThrottle').checked=defaults.autoThrottle;
   changeStreamQuality();rememberHostSetup();document.dispatchEvent(new Event('call-settings-refresh'));
 };
 $('#streamResolution').onchange = changeStreamQuality; $('#streamFramerate').onchange = changeStreamQuality;

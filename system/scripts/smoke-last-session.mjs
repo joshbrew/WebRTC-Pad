@@ -15,13 +15,25 @@ try{
   await context.route('**/config',async route=>{const response=await route.fetch(),config=await response.json();config.nativeCapture={available:true,audio:{available:true,window:true,streaming:true}};config.windowMouse=true;await route.fulfill({json:config});});
   await context.addInitScript(({key})=>{
     for(const role of ['host','client'])localStorage.setItem(`webrtc-pad:tour-v1:${role}`,'seen');localStorage.setItem('webrtc-pad:block-local-controller-input:v2','false');
-    if(!localStorage.getItem(key))localStorage.setItem(key,JSON.stringify({version:1,fields:{captureBackend:'native',streamResolution:'720',streamFramerate:'30',streamPriority:'resolution',hostAutoThrottle:false,nativeCaptureAudio:false,hostAllowGuestVideo:false,hostAllowGuestMic:false,hostAllowGuestScreens:false,hostDynamicControllers:true,hostDesktopMouse:true},source:{kind:'window',label:'Remembered game'},bounds:{width:1280,height:720},area:{x:20,y:20,width:640,height:360}}));
+    if(!location.search && !localStorage.getItem(key))localStorage.setItem(key,JSON.stringify({version:1,fields:{captureBackend:'native',streamResolution:'1080',streamFramerate:'30',streamPriority:'resolution',hostAutoThrottle:false,nativeCaptureAudio:false,hostAllowGuestVideo:false,hostAllowGuestMic:false,hostAllowGuestScreens:false,hostDynamicControllers:true,hostDesktopMouse:true},source:{kind:'window',label:'Remembered game'},bounds:{width:1280,height:720},area:{x:20,y:20,width:640,height:360}}));
     window.sharePrompts=0;navigator.mediaDevices.getDisplayMedia=async()=>{window.sharePrompts++;const canvas=document.createElement('canvas');canvas.width=640;canvas.height=360;const ctx=canvas.getContext('2d');ctx.fillStyle='#173c2b';ctx.fillRect(0,0,640,360);return canvas.captureStream(30);};
   },{key:lastSessionKey});
-  const page=await context.newPage();page.on('pageerror',e=>errors.push(e.message));await page.goto(origin);
+  const page=await context.newPage();page.on('pageerror',e=>errors.push(e.message));
+  await page.goto(origin+'/?mode=host');
+  await page.waitForFunction(()=>document.querySelector('#captureBackend').value==='native');
+  async function checkQualityDefaults(){
+    for(const [id,value] of Object.entries({streamResolution:'720',streamFramerate:'60',streamPriority:'balanced',streamCodec:'h264',streamMinimumResolution:'480'})){
+      assert.equal(await page.locator('#'+id).inputValue(),value);
+    }
+    assert.equal(await page.locator('#hostAutoThrottle').isChecked(),true);
+  }
+  await checkQualityDefaults();
+  await page.goto(origin);
   await page.waitForFunction(()=>document.querySelector('#captureTarget').value==='123');
   assert.equal(nativeStarts,0);assert.equal(await page.evaluate(()=>window.sharePrompts),0);
-  assert.equal(await page.locator('#streamResolution').inputValue(),'720');assert.equal(await page.locator('#streamFramerate').inputValue(),'30');assert.equal(await page.locator('#nativeCaptureAudio').isChecked(),false);
+  assert.equal(await page.locator('#streamResolution').inputValue(),'1080');assert.equal(await page.locator('#streamFramerate').inputValue(),'30');assert.equal(await page.locator('#streamPriority').inputValue(),'resolution');assert.equal(await page.locator('#nativeCaptureAudio').isChecked(),false);
+  await page.locator('#resetGlobalQuality').evaluate(button=>button.click());
+  await checkQualityDefaults();
   for(const id of ['hostAllowGuestVideo','hostAllowGuestMic','hostAllowGuestScreens'])assert.equal(await page.locator(`#${id}`).isChecked(),false);
   assert.equal(await page.locator('#hostDesktopScope').inputValue(),'off');assert.equal(await page.locator('#captureArea-width').inputValue(),'640');
   await page.locator('#nativeCaptureAudio').check();await page.locator('#hostAllowGuestVideo').check();
